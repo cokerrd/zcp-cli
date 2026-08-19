@@ -23,7 +23,29 @@ We welcome contributions from the community. Before opening a pull request:
 3. Follow the existing code style (run `make fmt` before committing).
 4. Add or update tests for any changed behavior.
 5. Run `make test-race` to confirm all tests pass.
-6. Open a pull request with a clear description of the change.
+6. Sign off every commit (`git commit -s`) — see [Developer Certificate of Origin](#developer-certificate-of-origin) below.
+7. Open a pull request with a clear description of the change.
+
+## Developer Certificate of Origin
+
+All commits must be signed off, certifying the [Developer Certificate of Origin](https://developercertificate.org/): a statement that you wrote the code, or otherwise have the right to submit it under this project's license.
+
+Sign off by adding the `-s` flag when committing:
+
+```
+git commit -s -m "fix: describe the change"
+```
+
+This appends a `Signed-off-by: Your Name <your@email>` line to the commit message. The name and email must match the commit author.
+
+To sign off commits already on your branch, rebase with sign-off and force-push:
+
+```
+git rebase --signoff origin/main
+git push --force-with-lease
+```
+
+A DCO check runs on every pull request and must pass before merge.
 
 ## Development Setup
 
