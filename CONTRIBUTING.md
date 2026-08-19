@@ -32,15 +32,15 @@ All commits must be signed off, certifying the [Developer Certificate of Origin]
 
 Sign off by adding the `-s` flag when committing:
 
-```
+```sh
 git commit -s -m "fix: describe the change"
 ```
 
 This appends a `Signed-off-by: Your Name <your@email>` line to the commit message. The name and email must match the commit author.
 
-To sign off commits already on your branch, rebase with sign-off and force-push:
+To sign off commits already on your branch, rebase with sign-off and force-push (replace `main` with your pull request's base branch if different):
 
-```
+```sh
 git rebase --signoff origin/main
 git push --force-with-lease
 ```

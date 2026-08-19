@@ -1,8 +1,14 @@
 name: DCO
 
+# pull_request_target runs the base branch's copy of this workflow, so a PR
+# cannot edit the check to green itself. Safe here: the job never checks out
+# or executes PR code, it only reads commit metadata via the API.
 on:
-  pull_request:
+  pull_request_target:
     branches: [main, 'release/*']
+
+permissions:
+  pull-requests: read
 
 jobs:
   dco:
@@ -12,16 +18,25 @@ jobs:
       - name: Check all commits for Signed-off-by
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          COMMIT_COUNT: ${{ github.event.pull_request.commits }}
         run: |
+          # The PR commits API returns at most 250 commits; refuse rather than pass unchecked.
+          if [ "$COMMIT_COUNT" -gt 250 ]; then
+            echo "This pull request has $COMMIT_COUNT commits; the DCO check supports at most 250."
+            echo "Split the pull request into smaller ones."
+            exit 1
+          fi
           # Merge commits (more than one parent) are exempt, matching standard DCO practice.
-          missing=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/commits" --paginate \
+          missing=$(gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER/commits" --paginate \
             --jq '.[] | select(.parents | length == 1) | select(.commit.message | test("(\\n|^)Signed-off-by: .+ <.+@.+>") | not) | .sha[0:7] + " " + (.commit.message | split("\n")[0])')
           if [ -n "$missing" ]; then
             echo "The following commits are missing a Signed-off-by line:"
             echo "$missing"
             echo ""
             echo "Sign off new commits with 'git commit -s'. To fix the commits on this branch, run:"
-            echo "  git rebase --signoff origin/main && git push --force-with-lease"
+            echo "  git rebase --signoff origin/$BASE_REF && git push --force-with-lease"
             echo "See CONTRIBUTING.md, section 'Developer Certificate of Origin'."
             exit 1
           fi
