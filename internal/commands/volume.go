@@ -206,17 +206,16 @@ func newVolumeAttachCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(getTimeout(cmd))*time.Second)
 			defer cancel()
 
-			vol, err := svc.Attach(ctx, volumeSlug, vmSlug)
+			resp, err := svc.Attach(ctx, volumeSlug, vmSlug)
 			if err != nil {
 				return fmt.Errorf("volume attach: %w", err)
 			}
-
-			headers := []string{"SLUG", "NAME", "SIZE", "VM ID"}
+			headers := []string{"SLUG", "VM SLUG", "STATUS", "MESSAGE"}
 			rows := [][]string{{
-				vol.Slug,
-				vol.Name,
-				formatSize(vol.Size),
-				vol.VirtualMachineID,
+				volumeSlug,
+				vmSlug,
+				resp.Status,
+				resp.Message,
 			}}
 			return printer.PrintTable(headers, rows)
 		},
@@ -241,7 +240,7 @@ func newVolumeDetachCmd() *cobra.Command {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(getTimeout(cmd))*time.Second)
 			defer cancel()
 
-			vol, err := svc.Detach(ctx, volumeSlug)
+			resp, err := svc.Detach(ctx, volumeSlug)
 			if err != nil {
 				if apierrors.IsResourceNotFound(err) {
 					fmt.Fprintf(os.Stderr, "Volume %q not found — already detached or deleted.\n", volumeSlug)
@@ -250,11 +249,11 @@ func newVolumeDetachCmd() *cobra.Command {
 				return fmt.Errorf("volume detach: %w", err)
 			}
 
-			headers := []string{"SLUG", "NAME", "SIZE"}
+			headers := []string{"SLUG", "STATUS", "MESSAGE"}
 			rows := [][]string{{
-				vol.Slug,
-				vol.Name,
-				formatSize(vol.Size),
+				volumeSlug,
+				resp.Status,
+				resp.Message,
 			}}
 			return printer.PrintTable(headers, rows)
 		},

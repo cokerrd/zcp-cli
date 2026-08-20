@@ -5,6 +5,12 @@ All notable changes to zcp will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.27] - 2026-08-20
+
+### Changed
+
+- **`volume attach` output now shows the volume slug and VM slugs and `volume detach` shows the volume slug** The API response only returns status and message, so the command now echoes the input slugs to provide clear feedback about what was attached and detached.
+
 ## [v0.0.26] - 2026-07-19
 
 ### Fixed
