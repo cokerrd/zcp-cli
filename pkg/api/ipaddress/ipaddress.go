@@ -52,6 +52,13 @@ type CreateRequest struct {
 // StaticNATRequest holds parameters for enabling static NAT.
 type StaticNATRequest struct {
 	VirtualMachine string `json:"virtual_machine"`
+	Network        string `json:"network"`
+}
+
+type StaticNATResponse struct {
+	Status  string    `json:"status"`
+	Message string    `json:"message"`
+	Data    IPAddress `json:"data"`
 }
 
 // RemoteAccessVPN represents a remote access VPN entry on an IP address.
@@ -150,13 +157,13 @@ func (s *Service) Allocate(ctx context.Context, req CreateRequest) (*IPAddress, 
 // EnableStaticNAT enables static NAT, associating a public IP with a VM.
 // ipSlug is the IP address slug (e.g. "1036521143").
 // vmSlug is the virtual machine slug.
-func (s *Service) EnableStaticNAT(ctx context.Context, ipSlug, vmSlug string) (*IPAddress, error) {
-	body := StaticNATRequest{VirtualMachine: vmSlug}
-	var resp singleResponse
+func (s *Service) EnableStaticNAT(ctx context.Context, ipSlug, vmSlug, networkSlug string) (*StaticNATResponse, error) {
+	body := StaticNATRequest{VirtualMachine: vmSlug, Network: networkSlug}
+	var resp StaticNATResponse
 	if err := s.client.Post(ctx, "/ipaddresses/"+ipSlug+"/static-nat", body, &resp); err != nil {
 		return nil, fmt.Errorf("enabling static NAT for IP %s: %w", ipSlug, err)
 	}
-	return &resp.Data, nil
+	return &resp, nil
 }
 
 // ListRemoteAccessVPNs returns remote access VPNs for a public IP address.
