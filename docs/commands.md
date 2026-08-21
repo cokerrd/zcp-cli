@@ -230,7 +230,7 @@ zcp network create --name web-tier --vpc <vpc-slug> --acl <acl-name> \
 zcp ip list
 zcp ip allocate --network <slug> --plan <ip-plan> --billing-cycle hourly
 zcp ip release <slug>
-zcp ip static-nat enable <ip-slug> --instance <vm-slug>
+zcp ip static-nat enable <ip-slug> --instance <vm-slug> --network <network-slug>
 
 # Firewall rules (ingress)
 zcp firewall list
