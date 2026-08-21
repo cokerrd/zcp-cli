@@ -281,6 +281,8 @@ type CreateRequest struct {
 	ComputeCategory      string      `json:"compute_category,omitempty"`
 	BlockstoragePlan     string      `json:"blockstorage_plan,omitempty"`
 	NetworkPlan          string      `json:"network_plan,omitempty"`
+	VrPlan               string      `json:"vr_plan,omitempty"`
+	DefaultNetwork       string      `json:"default_network,omitempty"`
 	IsVNF                bool        `json:"is_vnf"`
 	IsVMPasswordRequired bool        `json:"is_vm_password_required"`
 	IsVMSSHRequired      bool        `json:"is_vm_ssh_required"`
@@ -687,4 +689,17 @@ func StringVal(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// NormalizeNetworks cleans a list of network slugs, removing empty or trailing spaces.
+func NormalizeNetworks(input []string) []string {
+	var result []string
+
+	for _, network := range input {
+		cleaned := strings.TrimSpace(network)
+		if cleaned != "" {
+			result = append(result, cleaned)
+		}
+	}
+	return result
 }
