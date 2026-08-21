@@ -110,6 +110,22 @@ zcp instance create --name my-l2-vm --project default-9 --region yul-1 \
   --network-plan l2net-yul --network-type L2 --storage-category pro-nvme \
   --is-public=false
 
+# --network-type accepts Isolated (default), L2 or Vpc.
+# Isolated and L2 need --network-plan, Vpc needs --vr-plan, unless you attach
+# existing networks with --networks instead.
+
+# Create inside a VPC, building a new network from a virtual router plan
+zcp instance create --name my-vpc-vm --project default-9 --region yul-1 \
+  --template ubuntu-2604-lts-1 --plan ca2sl --billing-cycle hourly \
+  --network-type Vpc --vr-plan <router-plan> --storage-category pro-nvme
+
+# Attach existing networks instead of creating one. With more than one network,
+# --default-network is required and must be one of the values in --networks.
+zcp instance create --name my-multi-net-vm --project default-9 --region yul-1 \
+  --template ubuntu-2604-lts-1 --plan ca2sl --billing-cycle hourly \
+  --network-type Vpc --networks net-a,net-b --default-network net-a \
+  --storage-category pro-nvme
+
 # Lifecycle
 zcp instance start <slug>
 zcp instance stop <slug>
@@ -230,7 +246,7 @@ zcp network create --name web-tier --vpc <vpc-slug> --acl <acl-name> \
 zcp ip list
 zcp ip allocate --network <slug> --plan <ip-plan> --billing-cycle hourly
 zcp ip release <slug>
-zcp ip static-nat enable <ip-slug> --instance <vm-slug>
+zcp ip static-nat enable <ip-slug> --instance <vm-slug> --network <network-slug>
 
 # Firewall rules (ingress)
 zcp firewall list

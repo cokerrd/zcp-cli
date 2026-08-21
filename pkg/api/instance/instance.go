@@ -281,6 +281,8 @@ type CreateRequest struct {
 	ComputeCategory      string      `json:"compute_category,omitempty"`
 	BlockstoragePlan     string      `json:"blockstorage_plan,omitempty"`
 	NetworkPlan          string      `json:"network_plan,omitempty"`
+	VrPlan               string      `json:"vr_plan,omitempty"`
+	DefaultNetwork       string      `json:"default_network,omitempty"`
 	IsVNF                bool        `json:"is_vnf"`
 	IsVMPasswordRequired bool        `json:"is_vm_password_required"`
 	IsVMSSHRequired      bool        `json:"is_vm_ssh_required"`
@@ -687,4 +689,19 @@ func StringVal(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// NormalizeNetworks trims each network slug and drops blank entries. It always
+// returns a non-nil slice so the request marshals "networks" as [] rather than
+// null, which is the shape the API has always been sent.
+func NormalizeNetworks(input []string) []string {
+	result := []string{}
+
+	for _, network := range input {
+		cleaned := strings.TrimSpace(network)
+		if cleaned != "" {
+			result = append(result, cleaned)
+		}
+	}
+	return result
 }

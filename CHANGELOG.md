@@ -5,6 +5,34 @@ All notable changes to zcp will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.0.27] - 2026-08-31
+
+### Added
+
+- **`instance create` supports the `Vpc` network type and can attach existing networks.** Previously the command always created a new network and `--network-plan` was mandatory. It now takes:
+  - `--network-type Vpc` alongside the existing `Isolated` (default) and `L2`. Any other value is rejected up front instead of being passed to the API.
+  - `--vr-plan <slug>` to build a VPC network from a virtual router plan. Required for `Vpc` unless `--networks` is given, and rejected for `Isolated` and `L2`.
+  - `--networks <slug,...>` to attach one or more existing networks instead of creating one. When set, `--network-plan`/`--vr-plan` are not needed.
+  - `--default-network <slug>` to pick the default when several networks are attached. Required with more than one network, and must be one of the values in `--networks`.
+
+  `--network-plan` is no longer required outright. It is now required only for `Isolated` and `L2` when `--networks` is omitted, and rejected for `Vpc`. _Contributed by @cokerrd (#47)._
+
+### Changed
+
+- **`ip static-nat enable` now requires `--network`.** The API rejects a static NAT request that does not name a network, so the command could never succeed. It now takes `--network <network-slug>` alongside `--instance` and reports the status and message the API returns. This changes the command's required flags, but the previous form never worked. _Contributed by @cokerrd (#45, fixes #44)._
+- **`volume attach` and `volume detach` no longer print a blank row.** Both endpoints return only a status and a message, with no volume object, so the commands now echo the slugs you passed alongside that status instead of tabulating empty fields. _Contributed by @cokerrd (#46)._
+
+### Security
+
+- **Dependency and toolchain security update.** `govulncheck` reported five reachable Go standard-library vulnerabilities and one in `golang.org/x/net`. All are now resolved; a re-scan reports no reachable vulnerabilities.
+  - Go toolchain `1.26.5` -> `1.26.6`, fixing GO-2026-6218 (quadratic `net/url` path resolution), GO-2026-6090 (unbounded post-handshake messages in `crypto/tls`), GO-2026-6088 (`encoding/xml` recursion depth), GO-2026-5972 (`encoding/asn1` recursion depth), GO-2026-6089 (`net/http` HTTP/2 read-header timeout) and the standard-library half of GO-2026-5026 and GO-2026-5942. CI workflows and the documented Go requirement were pinned to match.
+  - `golang.org/x/net` `v0.53.0` -> `v0.58.0`, fixing GO-2026-5026 (`idna` accepting ASCII-only Punycode labels) and GO-2026-5942 (panic on an invalid SVCB/HTTPS record).
+  - `golang.org/x/text` `v0.37.0` -> `v0.41.0`, fixing GO-2026-5970 (infinite loop on invalid input).
+  - `github.com/klauspost/compress` `v1.18.6` -> `v1.19.2`, fixing GO-2026-5841 (out-of-bounds read in `s2`).
+  - Also refreshed: `golang.org/x/crypto` `v0.55.0`, `golang.org/x/term` `v0.45.0`, `golang.org/x/sys` `v0.47.0`, `github.com/minio/minio-go/v7` `v7.3.0`, plus transitive bumps to `cpuid`, `msgp`, `go-runewidth`, `go.yaml.in/yaml`, and `ini.v1`.
+
+  No command behaviour changes.
+
 ## [v0.0.26] - 2026-07-19
 
 ### Fixed

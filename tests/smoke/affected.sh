@@ -43,12 +43,12 @@ all=0
 while IFS= read -r f; do
   [[ -z "$f" ]] && continue
   case "$f" in
-    internal/api/*/*)
-      pkg="${f#internal/api/}"; pkg="${pkg%%/*}"
+    pkg/api/*/*)
+      pkg="${f#pkg/api/}"; pkg="${pkg%%/*}"
       svc="$(norm "$pkg")" ;;
     internal/commands/*.go)
       svc="$(norm "$(basename "$f" .go)")" ;;
-    cmd/zcp/*|internal/httpclient/*|internal/config/*|internal/version/*|go.mod|go.sum)
+    cmd/zcp/*|pkg/httpclient/*|internal/config/*|internal/output/*|internal/version/*|go.mod|go.sum)
       svc="all" ;;
     tests/smoke/*)
       svc="all" ;;   # changing the harness itself → run everything

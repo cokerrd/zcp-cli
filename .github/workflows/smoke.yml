@@ -19,10 +19,11 @@ on:
   pull_request:
     branches: [main, 'release/*']
     paths:
-      - 'internal/api/**'
+      - 'pkg/api/**'
       - 'internal/commands/**'
+      - 'internal/output/**'
       - 'cmd/zcp/**'
-      - 'internal/httpclient/**'
+      - 'pkg/httpclient/**'
       - 'tests/smoke/**'
   workflow_dispatch:
     inputs:
@@ -95,7 +96,7 @@ jobs:
           persist-credentials: false
 
       - uses: actions/setup-go@v5
-        with: { go-version: '1.26.5', cache: true }
+        with: { go-version: '1.26.6', cache: true }
 
       - name: Build zcp binary
         run: make build
