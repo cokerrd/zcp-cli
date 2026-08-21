@@ -55,6 +55,8 @@ type StaticNATRequest struct {
 	Network        string `json:"network"`
 }
 
+// StaticNATResponse is the STKCNSL envelope returned when enabling static NAT.
+// The endpoint reports the outcome in Status and Message; Data carries the IP.
 type StaticNATResponse struct {
 	Status  string    `json:"status"`
 	Message string    `json:"message"`

@@ -176,7 +176,7 @@ func TestIPEnableStaticNAT(t *testing.T) {
 		gotPath = r.URL.Path
 		json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(singleResponse{Status: "Success", Data: natResult})
+		json.NewEncoder(w).Encode(singleResponse{Status: "Success", Message: "Static NAT enabled.", Data: natResult})
 	}))
 	defer srv.Close()
 
@@ -190,6 +190,9 @@ func TestIPEnableStaticNAT(t *testing.T) {
 	}
 	if result.Status != "Success" {
 		t.Errorf("result.Status = %q, want %q", result.Status, "Success")
+	}
+	if result.Message != "Static NAT enabled." {
+		t.Errorf("result.Message = %q, want %q", result.Message, "Static NAT enabled.")
 	}
 	if gotBody["virtual_machine"] != "my-vm" {
 		t.Errorf("body virtual_machine = %v, want %q", gotBody["virtual_machine"], "my-vm")

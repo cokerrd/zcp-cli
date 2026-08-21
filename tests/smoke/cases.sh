@@ -345,7 +345,7 @@ lc_volume() {
   if _lc_result "volume" "$s"; then
     fx_vm; vm="$FX_VM"
     if [[ -n "$vm" ]]; then
-      run_case "volume attach"  -- zcp volume attach "$s" "$vm"
+      run_case "volume attach"  -- zcp volume attach "$s" --vm "$vm"
       sleep 8
       run_case "volume detach"  -- zcp volume detach "$s"
     else _mark_skip "volume attach (no VM fixture)"; fi

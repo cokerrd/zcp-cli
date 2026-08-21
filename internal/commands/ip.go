@@ -227,13 +227,13 @@ func runIPStaticNATEnable(cmd *cobra.Command, ipSlug, vmSlug, networkSlug string
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(getTimeout(cmd))*time.Second)
 	defer cancel()
 
-	ip, err := svc.EnableStaticNAT(ctx, ipSlug, vmSlug, networkSlug)
+	resp, err := svc.EnableStaticNAT(ctx, ipSlug, vmSlug, networkSlug)
 	if err != nil {
 		return fmt.Errorf("ip static-nat enable: %w", err)
 	}
 
 	headers := []string{"STATUS", "MESSAGE"}
-	rows := [][]string{{ip.Status, ip.Message}}
+	rows := [][]string{{resp.Status, resp.Message}}
 	return printer.PrintTable(headers, rows)
 }
 
