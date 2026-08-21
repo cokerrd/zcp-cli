@@ -64,7 +64,7 @@ zcp
 ├── instance                           VM instance operations
 │   ├── list                           List instances
 │   ├── get                            Show details for a single instance
-│   ├── create                         Create a new instance
+│   ├── create                         Create a new instance (--network-type Isolated|L2|Vpc; --network-plan for Isolated/L2, --vr-plan for Vpc, or --networks to attach existing ones with --default-network)
 │   ├── start                          Start a stopped instance
 │   ├── stop                           Stop a running instance
 │   ├── reboot                         Reboot a running instance
@@ -86,8 +86,8 @@ zcp
 ├── volume                             Block storage volume operations
 │   ├── list                           List volumes
 │   ├── create                         Create a new volume
-│   ├── attach                         Attach a volume to an instance
-│   ├── detach                         Detach a volume from its instance
+│   ├── attach                         Attach a volume to an instance (--vm required; reports the API status and message)
+│   ├── detach                         Detach a volume from its instance (reports the API status and message)
 │   └── delete                         Permanently delete a volume (detach first; --yes to skip prompt)
 │
 ├── snapshot                           Block storage snapshot operations
@@ -140,7 +140,7 @@ zcp
 │   ├── allocate                       Allocate a new public IP address (--plan, --billing-cycle, --vpc, --network, --project)
 │   ├── release                        Release a public IP address (--yes to skip prompt)
 │   ├── static-nat                     Static NAT operations
-│   │   └── enable                     Enable static NAT for an IP
+│   │   └── enable                     Enable static NAT for an IP (--instance and --network required)
 │   └── vpn                            Remote access VPN on an IP
 │       ├── list                       List VPN users for an IP
 │       ├── enable                     Enable remote VPN access on an IP

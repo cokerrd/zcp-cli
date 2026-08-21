@@ -19,10 +19,11 @@ on:
   pull_request:
     branches: [main, 'release/*']
     paths:
-      - 'internal/api/**'
+      - 'pkg/api/**'
       - 'internal/commands/**'
+      - 'internal/output/**'
       - 'cmd/zcp/**'
-      - 'internal/httpclient/**'
+      - 'pkg/httpclient/**'
       - 'tests/smoke/**'
   workflow_dispatch:
     inputs:
