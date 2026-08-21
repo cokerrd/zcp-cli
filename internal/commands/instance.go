@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +17,15 @@ import (
 	"github.com/zsoftly/zcp-cli/pkg/api/apierrors"
 	"github.com/zsoftly/zcp-cli/pkg/api/billing"
 	"github.com/zsoftly/zcp-cli/pkg/api/instance"
+)
+
+// When both --network-plan/--vr-plan and --networks are specified,
+// the API prioritizes --networks. The plan flags are only used to create
+// a new network when --networks is omitted.
+const (
+	NetworkTypeL2       = "L2"
+	NetworkTypeIsolated = "Isolated"
+	NetworkTypeVpc      = "Vpc"
 )
 
 // instanceGetRetryWait controls the backoff between transient-routing-error retries.
@@ -368,7 +378,16 @@ func newInstanceCreateCmd() *cobra.Command {
 		disk             int
 		wait             bool
 		isPublic         bool
+		networks         []string
+		vrPlan           string
+		defaultNetwork   string
 	)
+
+	var validNetworkTypes = map[string]bool{
+		NetworkTypeL2:       true,
+		NetworkTypeIsolated: true,
+		NetworkTypeVpc:      true,
+	}
 
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -404,9 +423,6 @@ func newInstanceCreateCmd() *cobra.Command {
 			if storageCategory == "" {
 				return fmt.Errorf("--storage-category is required")
 			}
-			if networkPlan == "" {
-				return fmt.Errorf("--network-plan is required")
-			}
 			if userData != "" && userDataFile != "" {
 				return fmt.Errorf("--user-data and --user-data-file are mutually exclusive")
 			}
@@ -417,9 +433,42 @@ func newInstanceCreateCmd() *cobra.Command {
 				}
 				userData = string(data)
 			}
+			networks = instance.NormalizeNetworks(networks)
 
-			if networkType == "L2" && isPublic {
-				return fmt.Errorf("--is-public cannot be true for L2 networks; pass --is-public=false")
+			if !validNetworkTypes[networkType] {
+				return fmt.Errorf("invalid value %q for --network-type: must be one of L2, Isolated, Vpc", networkType)
+			}
+			switch networkType {
+			case NetworkTypeL2:
+				if networkPlan == "" && len(networks) == 0 {
+					return fmt.Errorf("--network-plan or --networks is required when --network-type is '%s'", networkType)
+				}
+				if vrPlan != "" {
+					return fmt.Errorf("--vr-plan is not allowed when --network-type is '%s'", networkType)
+				}
+				if isPublic {
+					return fmt.Errorf("--is-public cannot be true for '%s' networks; pass --is-public=false", networkType)
+				}
+			case NetworkTypeIsolated:
+				if networkPlan == "" && len(networks) == 0 {
+					return fmt.Errorf("--network-plan or --networks is required when --network-type is '%s'", networkType)
+				}
+				if vrPlan != "" {
+					return fmt.Errorf("--vr-plan is not allowed when --network-type is '%s'", networkType)
+				}
+			case NetworkTypeVpc:
+				if vrPlan == "" && len(networks) == 0 {
+					return fmt.Errorf("--vr-plan or --networks is required when --network-type is '%s'", networkType)
+				}
+				if networkPlan != "" {
+					return fmt.Errorf("--network-plan is not allowed when --network-type is '%s'", networkType)
+				}
+			}
+			if len(networks) > 1 && defaultNetwork == "" {
+				return fmt.Errorf("--default-network is required when attaching multiple networks")
+			}
+			if defaultNetwork != "" && !slices.Contains(networks, defaultNetwork) {
+				return fmt.Errorf("--default-network must be one of --networks")
 			}
 
 			h := hostname
@@ -476,7 +525,7 @@ func newInstanceCreateCmd() *cobra.Command {
 				Template:         template,
 				IsPublic:         isPublic,
 				NetworkType:      networkType,
-				Networks:         []string{},
+				Networks:         networks,
 				BillingCycle:     billingCycle,
 				SSHKey:           sshKeyPtr,
 				AuthMethod:       authMethod,
@@ -491,6 +540,8 @@ func newInstanceCreateCmd() *cobra.Command {
 				ComputeCategory:  computeCategory,
 				BlockstoragePlan: blockstoragePlan,
 				NetworkPlan:      networkPlan,
+				DefaultNetwork:   defaultNetwork,
+				VrPlan:           vrPlan,
 				UserData:         userDataPtr,
 			}
 			return runInstanceCreate(cmd, req, wait)
@@ -501,15 +552,18 @@ func newInstanceCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&project, "project", "", "Project slug (required)")
 	cmd.Flags().StringVar(&region, "region", "", "Region slug (required)")
 	cmd.Flags().StringVar(&template, "template", "", "Template slug (required)")
-	cmd.Flags().StringVar(&plan, "plan", "", "Plan slug (required)")
+	cmd.Flags().StringVar(&plan, "plan", "", "Plan slug (required, e.g. ca2sxs- see: zcp plan vm)")
 	cmd.Flags().StringVar(&billingCycle, "billing-cycle", "", "Billing cycle slug: hourly, monthly, etc. (required)")
-	cmd.Flags().StringVar(&networkType, "network-type", "Isolated", "Network type (default: Isolated)")
+	cmd.Flags().StringVar(&networkType, "network-type", "Isolated", "Network type: Isolated, L2 or Vpc (required)")
 	cmd.Flags().StringVar(&sshKey, "ssh-key", "", "Name of an existing SSH key to attach for login (optional; see 'zcp ssh-key list')")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "Hostname (defaults to --name)")
-	cmd.Flags().StringVar(&storageCategory, "storage-category", "", "Storage category (required, e.g. premium-ssd - see: zcp plan storage)")
+	cmd.Flags().StringVar(&storageCategory, "storage-category", "", "Storage category (required; e.g. premium-ssd - see: zcp plan storage)")
 	cmd.Flags().StringVar(&computeCategory, "compute-category", "", "Compute category slug (optional)")
 	cmd.Flags().StringVar(&blockstoragePlan, "blockstorage-plan", "", "Block storage plan slug (optional, e.g. b2g1 — see: zcp plan storage)")
-	cmd.Flags().StringVar(&networkPlan, "network-plan", "", "Network plan slug (required, e.g. pnet-yow, pnet-yul — see: zcp plan network)")
+	cmd.Flags().StringVar(&networkPlan, "network-plan", "", "Network plan slug (optional; required when creating an Isolated or L2 network type — see: zcp plan network)")
+	cmd.Flags().StringVar(&vrPlan, "vr-plan", "", "Virtual router plan slug (optional; required when creating a VPC — see: zcp plan router)")
+	cmd.Flags().StringVar(&defaultNetwork, "default-network", "", "Default network slug (optional; required when attaching multiple networks)")
+	cmd.Flags().StringSliceVar(&networks, "networks", []string{}, "List of network slugs to attach to the instance (optional; see: zcp network list)")
 	cmd.Flags().StringVar(&userData, "user-data", "", "Startup script content (cloud-init / bash)")
 	cmd.Flags().StringVar(&userDataFile, "user-data-file", "", "Path to a file containing the startup script")
 	cmd.Flags().IntVar(&cpu, "cpu", 0, "Number of vCPUs for a custom plan (e.g. 2)")
