@@ -5,7 +5,22 @@ All notable changes to zcp will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v0.0.27] - 2026-08-31
+
+### Added
+
+- **`instance create` supports the `Vpc` network type and can attach existing networks.** Previously the command always created a new network and `--network-plan` was mandatory. It now takes:
+  - `--network-type Vpc` alongside the existing `Isolated` (default) and `L2`. Any other value is rejected up front instead of being passed to the API.
+  - `--vr-plan <slug>` to build a VPC network from a virtual router plan. Required for `Vpc` unless `--networks` is given, and rejected for `Isolated` and `L2`.
+  - `--networks <slug,...>` to attach one or more existing networks instead of creating one. When set, `--network-plan`/`--vr-plan` are not needed.
+  - `--default-network <slug>` to pick the default when several networks are attached. Required with more than one network, and must be one of the values in `--networks`.
+
+  `--network-plan` is no longer required outright. It is now required only for `Isolated` and `L2` when `--networks` is omitted, and rejected for `Vpc`. _Contributed by @cokerrd (#47)._
+
+### Changed
+
+- **`ip static-nat enable` now requires `--network`.** The API rejects a static NAT request that does not name a network, so the command could never succeed. It now takes `--network <network-slug>` alongside `--instance` and reports the status and message the API returns. This changes the command's required flags, but the previous form never worked. _Contributed by @cokerrd (#45, fixes #44)._
+- **`volume attach` and `volume detach` no longer print a blank row.** Both endpoints return only a status and a message, with no volume object, so the commands now echo the slugs you passed alongside that status instead of tabulating empty fields. _Contributed by @cokerrd (#46)._
 
 ### Security
 
@@ -17,11 +32,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
   - Also refreshed: `golang.org/x/crypto` `v0.55.0`, `golang.org/x/term` `v0.45.0`, `golang.org/x/sys` `v0.47.0`, `github.com/minio/minio-go/v7` `v7.3.0`, plus transitive bumps to `cpuid`, `msgp`, `go-runewidth`, `go.yaml.in/yaml`, and `ini.v1`.
 
   No command behaviour changes.
-
-### Changed
-
-- **`ip static-nat enable` now requires `--network`.** The API rejects a static NAT request that does not name a network, so the command could never succeed. It now takes `--network <network-slug>` alongside `--instance` and reports the status and message the API returns. This changes the command's required flags, but the previous form never worked. _Contributed by @cokerrd (#45, fixes #44)._
-- **`volume attach` and `volume detach` no longer print a blank row.** Both endpoints return only a status and a message, with no volume object, so the commands now echo the slugs you passed alongside that status instead of tabulating empty fields. _Contributed by @cokerrd (#46)._
 
 ## [v0.0.26] - 2026-07-19
 

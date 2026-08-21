@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -411,11 +412,29 @@ func TestNormalizeNetworks(t *testing.T) {
 		t.Errorf("NormalizeNetworks() = %v, want %v", got, want)
 	}
 
-	if got := instance.NormalizeNetworks(nil); got != nil {
-		t.Errorf("NormalizeNetworks(nil) = %v, want nil", got)
+	// Must stay non-nil and empty: a nil slice marshals "networks" as null,
+	// but the API has always been sent [].
+	if got := instance.NormalizeNetworks(nil); got == nil || len(got) != 0 {
+		t.Errorf("NormalizeNetworks(nil) = %v, want empty non-nil slice", got)
 	}
 
-	if got := instance.NormalizeNetworks([]string{"", "  "}); got != nil {
-		t.Errorf("NormalizeNetworks(all empty) = %v, want nil", got)
+	if got := instance.NormalizeNetworks([]string{"", "  "}); got == nil || len(got) != 0 {
+		t.Errorf("NormalizeNetworks(all empty) = %v, want empty non-nil slice", got)
+	}
+}
+
+// TestCreateOmittedNetworksMarshalsAsArray guards the request wire format: when
+// no --networks are passed the payload must carry "networks": [], not null.
+func TestCreateOmittedNetworksMarshalsAsArray(t *testing.T) {
+	req := instance.CreateRequest{
+		Name:     "test-vm",
+		Networks: instance.NormalizeNetworks(nil),
+	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(b), `"networks":[]`) {
+		t.Errorf("payload = %s, want it to contain %q", b, `"networks":[]`)
 	}
 }

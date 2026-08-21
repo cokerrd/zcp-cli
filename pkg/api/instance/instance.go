@@ -691,9 +691,11 @@ func StringVal(s *string) string {
 	return *s
 }
 
-// NormalizeNetworks cleans a list of network slugs, removing empty or trailing spaces.
+// NormalizeNetworks trims each network slug and drops blank entries. It always
+// returns a non-nil slice so the request marshals "networks" as [] rather than
+// null, which is the shape the API has always been sent.
 func NormalizeNetworks(input []string) []string {
-	var result []string
+	result := []string{}
 
 	for _, network := range input {
 		cleaned := strings.TrimSpace(network)

@@ -19,9 +19,7 @@ import (
 	"github.com/zsoftly/zcp-cli/pkg/api/instance"
 )
 
-// When both --network-plan/--vr-plan and --networks are specified,
-// the API prioritizes --networks. The plan flags are only used to create
-// a new network when --networks is omitted.
+// Network types accepted by --network-type.
 const (
 	NetworkTypeL2       = "L2"
 	NetworkTypeIsolated = "Isolated"
@@ -433,6 +431,9 @@ func newInstanceCreateCmd() *cobra.Command {
 				}
 				userData = string(data)
 			}
+			// When --networks is given alongside --network-plan/--vr-plan the API
+			// prioritizes --networks; the plan flags only create a new network
+			// when --networks is omitted.
 			networks = instance.NormalizeNetworks(networks)
 
 			if !validNetworkTypes[networkType] {
@@ -440,28 +441,28 @@ func newInstanceCreateCmd() *cobra.Command {
 			}
 			switch networkType {
 			case NetworkTypeL2:
-				if networkPlan == "" && len(networks) == 0 {
-					return fmt.Errorf("--network-plan or --networks is required when --network-type is '%s'", networkType)
-				}
 				if vrPlan != "" {
 					return fmt.Errorf("--vr-plan is not allowed when --network-type is '%s'", networkType)
+				}
+				if networkPlan == "" && len(networks) == 0 {
+					return fmt.Errorf("--network-plan or --networks is required when --network-type is '%s'", networkType)
 				}
 				if isPublic {
 					return fmt.Errorf("--is-public cannot be true for '%s' networks; pass --is-public=false", networkType)
 				}
 			case NetworkTypeIsolated:
-				if networkPlan == "" && len(networks) == 0 {
-					return fmt.Errorf("--network-plan or --networks is required when --network-type is '%s'", networkType)
-				}
 				if vrPlan != "" {
 					return fmt.Errorf("--vr-plan is not allowed when --network-type is '%s'", networkType)
 				}
-			case NetworkTypeVpc:
-				if vrPlan == "" && len(networks) == 0 {
-					return fmt.Errorf("--vr-plan or --networks is required when --network-type is '%s'", networkType)
+				if networkPlan == "" && len(networks) == 0 {
+					return fmt.Errorf("--network-plan or --networks is required when --network-type is '%s'", networkType)
 				}
+			case NetworkTypeVpc:
 				if networkPlan != "" {
 					return fmt.Errorf("--network-plan is not allowed when --network-type is '%s'", networkType)
+				}
+				if vrPlan == "" && len(networks) == 0 {
+					return fmt.Errorf("--vr-plan or --networks is required when --network-type is '%s'", networkType)
 				}
 			}
 			if len(networks) > 1 && defaultNetwork == "" {
