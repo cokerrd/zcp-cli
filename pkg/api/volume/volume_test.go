@@ -140,14 +140,13 @@ func TestVolumeAttach(t *testing.T) {
 		}
 		gotPath = r.URL.Path
 		json.NewDecoder(r.Body).Decode(&gotBody)
-		result := volume.Volume{ID: "vol-1", Slug: "root-4153", VirtualMachineID: "vm-1"}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(singleResponse{Status: "Success", Message: "Ok", Data: result})
+		json.NewEncoder(w).Encode(volume.ActionResponse{Status: "Success", Message: "Attaching block storage."})
 	}))
 	defer srv.Close()
 
 	svc := volume.NewService(newTestClient(t, srv))
-	vol, err := svc.Attach(context.Background(), "root-4153", "test-vm-1")
+	resp, err := svc.Attach(context.Background(), "root-4153", "test-vm-1")
 	if err != nil {
 		t.Fatalf("Attach() error = %v", err)
 	}
@@ -157,8 +156,11 @@ func TestVolumeAttach(t *testing.T) {
 	if gotBody["virtual_machine"] != "test-vm-1" {
 		t.Errorf("body virtual_machine = %v, want %q", gotBody["virtual_machine"], "test-vm-1")
 	}
-	if vol.VirtualMachineID != "vm-1" {
-		t.Errorf("vol.VirtualMachineID = %q, want %q", vol.VirtualMachineID, "vm-1")
+	if resp.Message != "Attaching block storage." {
+		t.Errorf("resp.Message = %q, want %q", resp.Message, "Attaching block storage.")
+	}
+	if resp.Status != "Success" {
+		t.Errorf("resp.Status = %q, want %q", resp.Status, "Success")
 	}
 }
 
@@ -167,14 +169,13 @@ func TestVolumeDetach(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method
 		gotPath = r.URL.Path
-		result := volume.Volume{ID: "vol-1", Slug: "root-4153"}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(singleResponse{Status: "Success", Message: "Ok", Data: result})
+		json.NewEncoder(w).Encode(volume.ActionResponse{Status: "Success", Message: "Detaching block storage."})
 	}))
 	defer srv.Close()
 
 	svc := volume.NewService(newTestClient(t, srv))
-	vol, err := svc.Detach(context.Background(), "root-4153")
+	resp, err := svc.Detach(context.Background(), "root-4153")
 	if err != nil {
 		t.Fatalf("Detach() error = %v", err)
 	}
@@ -184,8 +185,11 @@ func TestVolumeDetach(t *testing.T) {
 	if gotPath != "/blockstorages/root-4153/detach" {
 		t.Errorf("path = %q, want %q", gotPath, "/blockstorages/root-4153/detach")
 	}
-	if vol.Slug != "root-4153" {
-		t.Errorf("vol.Slug = %q, want %q", vol.Slug, "root-4153")
+	if resp.Status != "Success" {
+		t.Errorf("resp.Status = %q, want %q", resp.Status, "Success")
+	}
+	if resp.Message != "Detaching block storage." {
+		t.Errorf("resp.Message = %q, want %q", resp.Message, "Detaching block storage.")
 	}
 }
 

@@ -18,6 +18,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
 
   No command behaviour changes.
 
+### Changed
+
+- **`ip static-nat enable` now requires `--network`.** The API rejects a static NAT request that does not name a network, so the command could never succeed. It now takes `--network <network-slug>` alongside `--instance` and reports the status and message the API returns. This changes the command's required flags, but the previous form never worked. _Contributed by @cokerrd (#45, fixes #44)._
+- **`volume attach` and `volume detach` no longer print a blank row.** Both endpoints return only a status and a message, with no volume object, so the commands now echo the slugs you passed alongside that status instead of tabulating empty fields. _Contributed by @cokerrd (#46)._
+
 ## [v0.0.26] - 2026-07-19
 
 ### Fixed

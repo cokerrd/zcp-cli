@@ -108,6 +108,12 @@ type singleResponse struct {
 	Data    Volume `json:"data"`
 }
 
+// ActionResponse wraps simple action responses (attach/detach).
+type ActionResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 // CustomPlanStorage holds the storage size (in GB) for a custom-tier volume plan.
 type CustomPlanStorage struct {
 	Storage int `json:"storage"`
@@ -172,24 +178,24 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Volume, error
 }
 
 // Attach attaches a volume to a virtual machine.
-func (s *Service) Attach(ctx context.Context, volumeSlug, vmSlug string) (*Volume, error) {
+func (s *Service) Attach(ctx context.Context, volumeSlug, vmSlug string) (*ActionResponse, error) {
 	body := AttachRequest{VirtualMachine: vmSlug}
-	var resp singleResponse
+	var resp ActionResponse
 	path := fmt.Sprintf("/blockstorages/%s/attach", volumeSlug)
 	if err := s.client.Post(ctx, path, body, &resp); err != nil {
 		return nil, fmt.Errorf("attaching block storage %s to VM %s: %w", volumeSlug, vmSlug, err)
 	}
-	return &resp.Data, nil
+	return &resp, nil
 }
 
 // Detach detaches a volume from its virtual machine.
-func (s *Service) Detach(ctx context.Context, volumeSlug string) (*Volume, error) {
-	var resp singleResponse
+func (s *Service) Detach(ctx context.Context, volumeSlug string) (*ActionResponse, error) {
+	var resp ActionResponse
 	path := fmt.Sprintf("/blockstorages/%s/detach", volumeSlug)
 	if err := s.client.Post(ctx, path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("detaching block storage %s: %w", volumeSlug, err)
 	}
-	return &resp.Data, nil
+	return &resp, nil
 }
 
 // Delete permanently deletes a block storage volume. The volume must be detached first.
