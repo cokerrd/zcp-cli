@@ -102,6 +102,19 @@ zcp instance create \
   --blockstorage-plan b2g1 \
   --ssh-key mykey
 
+# Custom plan create. Omit --plan and pass CPU, memory in GB, and root disk in GB.
+zcp instance create \
+  --name my-custom-vm \
+  --project default-9 \
+  --region yul-1 \
+  --template ubuntu-2604-lts-1 \
+  --cpu 2 \
+  --memory 4 \
+  --disk 45 \
+  --billing-cycle hourly \
+  --network-plan pnet-yul \
+  --storage-category pro-nvme
+
 zcp instance create ... --wait
 
 # L2 networks cannot carry a public IP: pass --is-public=false (default: true)
