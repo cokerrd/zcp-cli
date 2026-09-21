@@ -64,7 +64,7 @@ zcp
 ├── instance                           VM instance operations
 │   ├── list                           List instances
 │   ├── get                            Show details for a single instance
-│   ├── create                         Create a new instance (--network-type Isolated|L2|Vpc; --network-plan for Isolated/L2, --vr-plan for Vpc, or --networks to attach existing ones with --default-network)
+│   ├── create                         Create a new instance (--plan for fixed plans, or --cpu/--memory/--disk for custom plans; --network-type Isolated|L2|Vpc; --network-plan for Isolated/L2, --vr-plan for Vpc, or --networks to attach existing ones with --default-network)
 │   ├── start                          Start a stopped instance
 │   ├── stop                           Stop a running instance
 │   ├── reboot                         Reboot a running instance

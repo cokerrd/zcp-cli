@@ -289,6 +289,25 @@ type CreateRequest struct {
 	IsFreeTrial          bool        `json:"is_free_trial_plan"`
 }
 
+func (r CreateRequest) MarshalJSON() ([]byte, error) {
+	type createRequest CreateRequest
+
+	b, err := json.Marshal(createRequest(r))
+	if err != nil {
+		return nil, err
+	}
+	if r.CustomPlan == nil || r.Plan != "" {
+		return b, nil
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return nil, err
+	}
+	payload["plan"] = nil
+	return json.Marshal(payload)
+}
+
 // CustomPlan allows specifying custom CPU/memory/storage when using a custom plan.
 type CustomPlan struct {
 	Storage string `json:"storage,omitempty"`

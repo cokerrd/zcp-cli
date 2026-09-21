@@ -438,3 +438,34 @@ func TestCreateOmittedNetworksMarshalsAsArray(t *testing.T) {
 		t.Errorf("payload = %s, want it to contain %q", b, `"networks":[]`)
 	}
 }
+
+func TestCreateCustomPlanMarshalsPlanNull(t *testing.T) {
+	req := instance.CreateRequest{
+		Name: "test-vm",
+		CustomPlan: &instance.CustomPlan{
+			CPU:     "2",
+			Memory:  "4",
+			Storage: "45",
+		},
+		Networks: instance.NormalizeNetworks(nil),
+	}
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	payload := string(b)
+	if !strings.Contains(payload, `"plan":null`) {
+		t.Errorf("payload = %s, want it to contain %q", payload, `"plan":null`)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	customPlan, ok := got["custom_plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("custom_plan = %#v, want object", got["custom_plan"])
+	}
+	if customPlan["storage"] != "45" || customPlan["cpu"] != "2" || customPlan["memory"] != "4" {
+		t.Errorf("custom_plan = %#v, want storage=45 cpu=2 memory=4", customPlan)
+	}
+}

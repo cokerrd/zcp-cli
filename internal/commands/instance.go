@@ -26,6 +26,11 @@ const (
 	NetworkTypeVpc      = "Vpc"
 )
 
+const (
+	customPlanCPUMin      = 2
+	customPlanMemoryMaxGB = 256
+)
+
 // instanceGetRetryWait controls the backoff between transient-routing-error retries.
 // Overridden in tests to avoid real sleeps.
 var instanceGetRetryWait = func(attempt int) time.Duration {
@@ -412,9 +417,6 @@ func newInstanceCreateCmd() *cobra.Command {
 			if template == "" {
 				return fmt.Errorf("--template is required")
 			}
-			if plan == "" {
-				return fmt.Errorf("--plan is required")
-			}
 			if billingCycle == "" {
 				return fmt.Errorf("--billing-cycle is required")
 			}
@@ -492,28 +494,15 @@ func newInstanceCreateCmd() *cobra.Command {
 				userDataPtr = &userData
 			}
 
-			if cmd.Flags().Changed("cpu") && cpu <= 0 {
-				return fmt.Errorf("invalid value for --cpu: must be > 0")
-			}
-			if cmd.Flags().Changed("memory") && memory <= 0 {
-				return fmt.Errorf("invalid value for --memory: must be > 0")
-			}
-			if cmd.Flags().Changed("disk") && disk <= 0 {
-				return fmt.Errorf("invalid value for --disk: must be > 0")
-			}
-
-			var customPlan *instance.CustomPlan
-			if cpu > 0 || memory > 0 || disk > 0 {
-				customPlan = &instance.CustomPlan{}
-				if cpu > 0 {
-					customPlan.CPU = strconv.Itoa(cpu)
-				}
-				if memory > 0 {
-					customPlan.Memory = strconv.Itoa(memory)
-				}
-				if disk > 0 {
-					customPlan.Storage = strconv.Itoa(disk)
-				}
+			resolvedPlan, customPlan, err := resolveInstanceCreatePlan(
+				plan,
+				cpu, memory, disk,
+				cmd.Flags().Changed("cpu"),
+				cmd.Flags().Changed("memory"),
+				cmd.Flags().Changed("disk"),
+			)
+			if err != nil {
+				return err
 			}
 
 			req := instance.CreateRequest{
@@ -531,7 +520,7 @@ func newInstanceCreateCmd() *cobra.Command {
 				SSHKey:           sshKeyPtr,
 				AuthMethod:       authMethod,
 				Password:         passwordPtr,
-				Plan:             plan,
+				Plan:             resolvedPlan,
 				CustomPlan:       customPlan,
 				OSFamily:         "Linux",
 				TemplateType:     "Operating System",
@@ -553,7 +542,7 @@ func newInstanceCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&project, "project", "", "Project slug (required)")
 	cmd.Flags().StringVar(&region, "region", "", "Region slug (required)")
 	cmd.Flags().StringVar(&template, "template", "", "Template slug (required)")
-	cmd.Flags().StringVar(&plan, "plan", "", "Plan slug (required, e.g. ca2sxs- see: zcp plan vm)")
+	cmd.Flags().StringVar(&plan, "plan", "", "Plan slug (required unless --cpu, --memory, and --disk are provided for a custom plan; e.g. ca2sxs - see: zcp plan vm)")
 	cmd.Flags().StringVar(&billingCycle, "billing-cycle", "", "Billing cycle slug: hourly, monthly, etc. (required)")
 	cmd.Flags().StringVar(&networkType, "network-type", "Isolated", "Network type: Isolated, L2 or Vpc (required)")
 	cmd.Flags().StringVar(&sshKey, "ssh-key", "", "Name of an existing SSH key to attach for login (optional; see 'zcp ssh-key list')")
@@ -568,11 +557,45 @@ func newInstanceCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&userData, "user-data", "", "Startup script content (cloud-init / bash)")
 	cmd.Flags().StringVar(&userDataFile, "user-data-file", "", "Path to a file containing the startup script")
 	cmd.Flags().IntVar(&cpu, "cpu", 0, "Number of vCPUs for a custom plan (e.g. 2)")
-	cmd.Flags().IntVar(&memory, "memory", 0, "RAM in MB for a custom plan (e.g. 2048)")
+	cmd.Flags().IntVar(&memory, "memory", 0, "RAM in GB for a custom plan (e.g. 4)")
 	cmd.Flags().IntVar(&disk, "disk", 0, "Root disk size in GB for a custom plan (e.g. 50)")
 	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for the instance to reach Running state")
 	cmd.Flags().BoolVar(&isPublic, "is-public", true, "Assign a public IP address")
 	return cmd
+}
+
+func resolveInstanceCreatePlan(plan string, cpu, memory, disk int, cpuSet, memorySet, diskSet bool) (string, *instance.CustomPlan, error) {
+	customSet := cpuSet || memorySet || diskSet
+	customComplete := cpuSet && memorySet && diskSet
+
+	if plan == "" && !customComplete {
+		return "", nil, fmt.Errorf("--plan is required unless --cpu, --memory, and --disk are all provided for a custom plan")
+	}
+	if plan != "" && customSet {
+		return "", nil, fmt.Errorf("--plan cannot be used with --cpu, --memory, or --disk; omit --plan for a custom plan")
+	}
+	if !customSet {
+		return plan, nil, nil
+	}
+
+	if cpu < customPlanCPUMin {
+		return "", nil, fmt.Errorf("invalid value for --cpu: must be at least %d vCPU", customPlanCPUMin)
+	}
+	if memory <= 0 {
+		return "", nil, fmt.Errorf("invalid value for --memory: must be > 0 GB")
+	}
+	if memory > customPlanMemoryMaxGB {
+		return "", nil, fmt.Errorf("invalid value for --memory: must be less than or equal to %d GB", customPlanMemoryMaxGB)
+	}
+	if disk <= 0 {
+		return "", nil, fmt.Errorf("invalid value for --disk: must be > 0 GB")
+	}
+
+	return "", &instance.CustomPlan{
+		CPU:     strconv.Itoa(cpu),
+		Memory:  strconv.Itoa(memory),
+		Storage: strconv.Itoa(disk),
+	}, nil
 }
 
 func runInstanceCreate(cmd *cobra.Command, req instance.CreateRequest, wait bool) error {

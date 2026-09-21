@@ -5,6 +5,12 @@ All notable changes to zcp will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`instance create` now supports custom VM plans.** Passing `--cpu`, `--memory`, and `--disk` without `--plan` sends `plan: null` with a `custom_plan` payload. `--memory` is now documented and validated as GB, matching the API. Out-of-range custom CPU and memory values fail locally with clear unit-aware messages. _Fixes zsoftly/iaas#544._
+
 ## [v0.0.29] - 2026-09-07
 
 ### Fixed
