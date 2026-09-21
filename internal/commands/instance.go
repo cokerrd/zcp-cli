@@ -494,7 +494,7 @@ func newInstanceCreateCmd() *cobra.Command {
 				userDataPtr = &userData
 			}
 
-			planPtr, customPlan, err := resolveInstanceCreatePlan(
+			resolvedPlan, customPlan, err := resolveInstanceCreatePlan(
 				plan,
 				cpu, memory, disk,
 				cmd.Flags().Changed("cpu"),
@@ -520,7 +520,7 @@ func newInstanceCreateCmd() *cobra.Command {
 				SSHKey:           sshKeyPtr,
 				AuthMethod:       authMethod,
 				Password:         passwordPtr,
-				Plan:             planPtr,
+				Plan:             resolvedPlan,
 				CustomPlan:       customPlan,
 				OSFamily:         "Linux",
 				TemplateType:     "Operating System",
@@ -564,34 +564,34 @@ func newInstanceCreateCmd() *cobra.Command {
 	return cmd
 }
 
-func resolveInstanceCreatePlan(plan string, cpu, memory, disk int, cpuSet, memorySet, diskSet bool) (*string, *instance.CustomPlan, error) {
+func resolveInstanceCreatePlan(plan string, cpu, memory, disk int, cpuSet, memorySet, diskSet bool) (string, *instance.CustomPlan, error) {
 	customSet := cpuSet || memorySet || diskSet
 	customComplete := cpuSet && memorySet && diskSet
 
 	if plan == "" && !customComplete {
-		return nil, nil, fmt.Errorf("--plan is required unless --cpu, --memory, and --disk are all provided for a custom plan")
+		return "", nil, fmt.Errorf("--plan is required unless --cpu, --memory, and --disk are all provided for a custom plan")
 	}
 	if plan != "" && customSet {
-		return nil, nil, fmt.Errorf("--plan cannot be used with --cpu, --memory, or --disk; omit --plan for a custom plan")
+		return "", nil, fmt.Errorf("--plan cannot be used with --cpu, --memory, or --disk; omit --plan for a custom plan")
 	}
 	if !customSet {
-		return &plan, nil, nil
+		return plan, nil, nil
 	}
 
 	if cpu < customPlanCPUMin {
-		return nil, nil, fmt.Errorf("invalid value for --cpu: must be at least %d vCPU", customPlanCPUMin)
+		return "", nil, fmt.Errorf("invalid value for --cpu: must be at least %d vCPU", customPlanCPUMin)
 	}
 	if memory <= 0 {
-		return nil, nil, fmt.Errorf("invalid value for --memory: must be > 0 GB")
+		return "", nil, fmt.Errorf("invalid value for --memory: must be > 0 GB")
 	}
 	if memory > customPlanMemoryMaxGB {
-		return nil, nil, fmt.Errorf("invalid value for --memory: must be less than or equal to %d GB", customPlanMemoryMaxGB)
+		return "", nil, fmt.Errorf("invalid value for --memory: must be less than or equal to %d GB", customPlanMemoryMaxGB)
 	}
 	if disk <= 0 {
-		return nil, nil, fmt.Errorf("invalid value for --disk: must be > 0 GB")
+		return "", nil, fmt.Errorf("invalid value for --disk: must be > 0 GB")
 	}
 
-	return nil, &instance.CustomPlan{
+	return "", &instance.CustomPlan{
 		CPU:     strconv.Itoa(cpu),
 		Memory:  strconv.Itoa(memory),
 		Storage: strconv.Itoa(disk),

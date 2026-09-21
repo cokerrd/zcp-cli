@@ -10,7 +10,7 @@ func TestResolveInstanceCreatePlanFixedPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveInstanceCreatePlan() error = %v", err)
 	}
-	if plan == nil || *plan != "ca1hxs" {
+	if plan != "ca1hxs" {
 		t.Fatalf("plan = %v, want ca1hxs", plan)
 	}
 	if customPlan != nil {
@@ -23,8 +23,8 @@ func TestResolveInstanceCreatePlanCustomPlan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveInstanceCreatePlan() error = %v", err)
 	}
-	if plan != nil {
-		t.Fatalf("plan = %v, want nil", *plan)
+	if plan != "" {
+		t.Fatalf("plan = %v, want empty", plan)
 	}
 	if customPlan == nil {
 		t.Fatal("customPlan = nil, want custom sizing")

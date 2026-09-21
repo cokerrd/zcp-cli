@@ -267,7 +267,7 @@ type CreateRequest struct {
 	BillingCycle         string      `json:"billing_cycle"`
 	SSHKey               *string     `json:"ssh_key"`
 	AuthMethod           string      `json:"authMethod,omitempty"`
-	Plan                 *string     `json:"plan"`
+	Plan                 string      `json:"plan"`
 	CustomPlan           *CustomPlan `json:"custom_plan"`
 	OSFamily             string      `json:"os_family,omitempty"`
 	TemplateType         string      `json:"template_type,omitempty"`
@@ -287,6 +287,25 @@ type CreateRequest struct {
 	IsVMPasswordRequired bool        `json:"is_vm_password_required"`
 	IsVMSSHRequired      bool        `json:"is_vm_ssh_required"`
 	IsFreeTrial          bool        `json:"is_free_trial_plan"`
+}
+
+func (r CreateRequest) MarshalJSON() ([]byte, error) {
+	type createRequest CreateRequest
+
+	b, err := json.Marshal(createRequest(r))
+	if err != nil {
+		return nil, err
+	}
+	if r.CustomPlan == nil || r.Plan != "" {
+		return b, nil
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return nil, err
+	}
+	payload["plan"] = nil
+	return json.Marshal(payload)
 }
 
 // CustomPlan allows specifying custom CPU/memory/storage when using a custom plan.
