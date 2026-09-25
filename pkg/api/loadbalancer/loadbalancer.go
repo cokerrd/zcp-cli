@@ -201,7 +201,7 @@ func (s *Service) List(ctx context.Context, region, project string) ([]LoadBalan
 // spin forever. Set well above any realistic page count.
 const maxListPages = 1000
 
-// // Get retrieves a load balancer by its slug
+// Get retrieves a load balancer by its slug.
 func (s *Service) Get(ctx context.Context, slug string) (*LoadBalancer, error) {
 	var resp singleResponse
 	if err := s.client.Get(ctx, "/load-balancers/"+slug, nil, &resp); err != nil {
