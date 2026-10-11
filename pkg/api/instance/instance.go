@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zsoftly/zcp-cli/pkg/api/billing"
 	"github.com/zsoftly/zcp-cli/pkg/httpclient"
 )
 
@@ -542,10 +543,16 @@ func (s *Service) DeleteTag(ctx context.Context, slug string, key string) error 
 	return nil
 }
 
-// ChangeHostname changes the hostname/label of a virtual machine.
+// ChangeHostname changes a virtual machine's hostname.
 func (s *Service) ChangeHostname(ctx context.Context, slug string, req ChangeLabelRequest) (*ActionResponse, error) {
+	if strings.TrimSpace(req.Name) == "" {
+		return nil, fmt.Errorf("changing hostname for %s: current instance name is required", slug)
+	}
+	if strings.TrimSpace(req.Hostname) == "" {
+		return nil, fmt.Errorf("changing hostname for %s: hostname is required", slug)
+	}
 	var resp ActionResponse
-	if err := s.client.Post(ctx, "/virtual-machines/"+slug+"/change-label", req, &resp); err != nil {
+	if err := s.client.Post(ctx, "/virtual-machines/"+slug+"/change-hostname", req, &resp); err != nil {
 		return nil, fmt.Errorf("changing hostname for %s: %w", slug, err)
 	}
 	return &resp, nil
@@ -618,29 +625,63 @@ func (s *Service) PurchaseAddon(ctx context.Context, req PurchaseAddonRequest) (
 	return &resp, nil
 }
 
-// Delete performs a direct destroy of a virtual machine via DELETE /virtual-machines/{slug}.
-// If expunge is true, ?expunge=true is sent to force immediate purge from the hypervisor
-// rather than leaving the VM in a soft-deleted/Destroyed state pending platform expunge.
+// Delete submits an immediate service-cancellation request for a virtual machine.
 //
-// NOTE: this endpoint does NOT release the VM's auto-assigned public IP — the delete_public_ip
-// query param is accepted but ignored by the CMP, leaving the IP Allocated/billable. To delete
-// a VM AND release its public IP (as the CMP Web UI does), use the service-cancellation workflow
-// instead: billing.Service.CancelService with delete_public_ip set (see 'zcp instance delete').
+// The former DELETE /virtual-machines/{slug} route is no longer available. The expunge
+// parameter is retained for source compatibility but has no effect: cancellation is always
+// immediate. Delete resolves the VM first because the cancellation endpoint requires its
+// billing-cycle unit. It refuses to submit a cancellation when the cycle is missing or
+// unrecognised rather than guessing one.
 func (s *Service) Delete(ctx context.Context, slug string, expunge, deletePublicIP bool) error {
-	q := url.Values{}
-	if expunge {
-		q.Set("expunge", "true")
+	_ = expunge
+	vm, err := s.Get(ctx, slug)
+	if err != nil {
+		return fmt.Errorf("getting virtual machine %s before cancellation: %w", slug, err)
 	}
-	if deletePublicIP {
-		q.Set("delete_public_ip", "true")
+	if strings.TrimSpace(vm.Slug) == "" {
+		return fmt.Errorf("cancelling virtual machine %s: response did not include a slug", slug)
 	}
-	if len(q) == 0 {
-		q = nil
+	cycle, ok := cancellationBillingCycle(vm)
+	if !ok {
+		return fmt.Errorf("cancelling virtual machine %s: could not determine billing cycle", slug)
 	}
-	if err := s.client.Delete(ctx, "/virtual-machines/"+slug, q); err != nil {
-		return fmt.Errorf("deleting virtual machine %s: %w", slug, err)
+	dip := deletePublicIP
+	req := billing.CancelServiceRequest{
+		ServiceName:    "Virtual Machine",
+		Reason:         "not_needed_anymore",
+		Type:           "Immediate",
+		Status:         "Pending",
+		BillingCycle:   cycle,
+		DeletePublicIP: &dip,
+	}
+	if err := billing.NewService(s.client).CancelService(ctx, vm.Slug, req); err != nil {
+		return fmt.Errorf("cancelling virtual machine %s: %w", vm.Slug, err)
 	}
 	return nil
+}
+
+func cancellationBillingCycle(vm *VirtualMachine) (string, bool) {
+	if vm == nil {
+		return "", false
+	}
+	cycles := []*BillingCycle{vm.BillingCycle}
+	if vm.Offering != nil {
+		cycles = append(cycles, vm.Offering.BillingCycle)
+	}
+	for _, cycle := range cycles {
+		if cycle == nil {
+			continue
+		}
+		for _, value := range []string{cycle.Unit, cycle.Slug, cycle.Name} {
+			switch strings.ToLower(strings.TrimSpace(value)) {
+			case "hour", "hourly":
+				return "hour", true
+			case "month", "monthly":
+				return "month", true
+			}
+		}
+	}
+	return "", false
 }
 
 // VMMeta is the live, hypervisor-synced view of a VM from GET /virtual-machines/{slug}/meta.

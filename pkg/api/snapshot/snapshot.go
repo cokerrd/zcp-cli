@@ -41,7 +41,7 @@ type listResponse struct {
 	Message     string     `json:"message"`
 	CurrentPage int        `json:"current_page"`
 	Data        []Snapshot `json:"data"`
-	Total       int        `json:"total"`
+	Total       *int       `json:"total"`
 }
 
 // singleResponse is used when the API returns a single snapshot in `data`.
@@ -69,6 +69,8 @@ type Service struct {
 	client *httpclient.Client
 }
 
+const maxListPages = 1000
+
 // NewService creates a new snapshot Service.
 func NewService(client *httpclient.Client) *Service {
 	return &Service{client: client}
@@ -79,17 +81,65 @@ func (s *Service) List(ctx context.Context, region, project string) ([]Snapshot,
 	q := url.Values{
 		"include": {"blockstorage,region,cloud_provider,project"},
 	}
-	var resp listResponse
 	if region != "" {
 		q.Set("filter[region]", region)
 	}
 	if project != "" {
 		q.Set("filter[project]", project)
 	}
-	if err := s.client.Get(ctx, "/blockstorages/snapshots", q, &resp); err != nil {
-		return nil, fmt.Errorf("listing block storage snapshots: %w", err)
+	var all []Snapshot
+	var reportedTotal *int
+	for page := 1; page <= maxListPages; page++ {
+		pageQuery := make(url.Values, len(q))
+		for key, values := range q {
+			pageQuery[key] = append([]string(nil), values...)
+		}
+		if page > 1 {
+			pageQuery.Set("page", fmt.Sprintf("%d", page))
+		}
+
+		var resp listResponse
+		if err := s.client.Get(ctx, "/blockstorages/snapshots", pageQuery, &resp); err != nil {
+			return nil, fmt.Errorf("listing block storage snapshots: %w", err)
+		}
+		if resp.CurrentPage < 0 {
+			return nil, fmt.Errorf("listing block storage snapshots: API returned invalid negative page %d", resp.CurrentPage)
+		}
+		if page > 1 && resp.CurrentPage == 0 {
+			return nil, fmt.Errorf("listing block storage snapshots: requested page %d but the API did not return pagination metadata", page)
+		}
+		if resp.CurrentPage > 0 && resp.CurrentPage != page {
+			return nil, fmt.Errorf("listing block storage snapshots: requested page %d but the API returned page %d", page, resp.CurrentPage)
+		}
+		all = append(all, resp.Data...)
+		if reportedTotal == nil {
+			reportedTotal = resp.Total
+		} else if resp.Total == nil || *resp.Total != *reportedTotal {
+			return nil, fmt.Errorf("listing block storage snapshots: API changed reported total on page %d", page)
+		}
+		if reportedTotal == nil {
+			return all, nil
+		}
+		if *reportedTotal < 0 {
+			return nil, fmt.Errorf("listing block storage snapshots: API returned invalid negative total %d", *reportedTotal)
+		}
+		if *reportedTotal == 0 {
+			if len(resp.Data) > 0 {
+				return nil, fmt.Errorf("listing block storage snapshots: page %d returned snapshots despite a total of zero", page)
+			}
+			return all, nil
+		}
+		if len(all) > *reportedTotal {
+			return nil, fmt.Errorf("listing block storage snapshots: page %d produced more snapshots than the reported total %d", page, *reportedTotal)
+		}
+		if len(resp.Data) == 0 {
+			return nil, fmt.Errorf("listing block storage snapshots: page %d was empty before reaching reported total %d", page, *reportedTotal)
+		}
+		if len(all) == *reportedTotal {
+			return all, nil
+		}
 	}
-	return resp.Data, nil
+	return nil, fmt.Errorf("listing block storage snapshots: exceeded %d pages without reaching the reported total", maxListPages)
 }
 
 // Create creates a new block storage snapshot.

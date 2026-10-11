@@ -411,6 +411,43 @@ func TestInstanceGetRetryExhausted(t *testing.T) {
 // verify the delete command derives billing_cycle for the service-cancel request.
 const vmListWithBillingCycle = `{"status":"Success","message":"OK","data":[{"id":"a1b2c3","vm_id":"vm-1","name":"test-vm","slug":"test-vm","hostname":"test-vm","username":"ubuntu","state":"Running","request_status":true,"billing_cycle":{"id":"bc1","name":"Hourly","slug":"hourly","duration":1,"unit":"hour"},"is_vnf":false,"has_contract":false,"is_metrics_hidden":false,"is_restricted":false,"has_autoscale":false,"all_time_consumption":0,"created_at":"2026-01-01T00:00:00.000000Z","updated_at":"2026-01-01T00:00:00.000000Z","networks":[]}]}`
 
+func TestInstanceChangeHostnameUsesCurrentName(t *testing.T) {
+	t.Setenv("ZCP_BEARER_TOKEN", "test-tok")
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, minVMListBody)
+		case r.Method == http.MethodPost && r.URL.Path == "/virtual-machines/test-vm/change-hostname":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decoding change-hostname request: %v", err)
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"status":"Success","message":"Changing hostname for the virtual machine..."}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	stdout, stderr, err := execCmd(t, NewInstanceCmd(), "change-hostname", "test-vm", "--hostname", "renamed-vm", "--api-url", srv.URL)
+	if err != nil {
+		t.Fatalf("change-hostname error = %v\nstdout: %s\nstderr: %s", err, stdout, stderr)
+	}
+	if got := body["name"]; got != "test-vm" {
+		t.Errorf("name = %#v, want %q", got, "test-vm")
+	}
+	if got := body["hostname"]; got != "renamed-vm" {
+		t.Errorf("hostname = %#v, want %q", got, "renamed-vm")
+	}
+	if _, ok := body["vm_label"]; ok {
+		t.Error("request body includes vm_label")
+	}
+}
+
 // TestInstanceDeleteUsesServiceCancel verifies that `zcp instance delete` routes through
 // the unified service-cancellation endpoint (which releases the auto-assigned public IP),
 // NOT the direct DELETE endpoint (which ignores delete_public_ip). Regression test for the

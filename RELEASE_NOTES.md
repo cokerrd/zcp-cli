@@ -1,4 +1,24 @@
-# zcp v1.0.0 Release Notes
+# zcp v1.0.1 Release Notes
+
+v1.0.1 is a compatibility patch for the current API routes. It updates the Go
+client's instance deletion workflow and hostname-change request.
+
+## Fixed
+
+- `instance.Service.Delete` retains its exported signature and now submits an
+  immediate Virtual Machine service-cancellation request. It resolves the VM's
+  billing cycle first. The legacy `expunge` argument remains accepted but has
+  no effect because cancellation is immediate.
+- `instance.Service.ChangeHostname` sends the current instance name and the
+  requested hostname to the hostname-change endpoint. Changing the hostname
+  restarts the instance.
+- `snapshot.Service.List` retrieves every reported page and returns an error
+  rather than partial results when a later page fails or pagination metadata is
+  inconsistent.
+- `zcp volume create` accepts a named `--plan` with a positive `--size` to set
+  capacity in GB for the selected storage tier.
+
+## v1.0.0 release material
 
 v1.0.0 requires separate compute and root-storage selections for new instances
 and Kubernetes clusters. It adds VM backup schedule commands, restore
@@ -125,7 +145,7 @@ release.
 
 ## Known limitations
 
-- Automatic Kubernetes scale-out failed in staging. `zcp kubernetes scale --enable-autoscaling` submitted the requested autoscaling configuration, but no worker was added. Staging scaling tests also recreated existing node root-volume subscriptions. Billing correctness after scaling remains unverified; this release does not resolve that platform issue. Manual worker scaling was tested separately.
+- Automatic Kubernetes scale-out is unverified. `zcp kubernetes scale --enable-autoscaling` submits the requested configuration, but the platform may not add a worker. Scaling can also change root-volume subscriptions. Billing correctness after scaling remains unverified.
 - The current platform can persist an `everyOtherDay` VM backup policy before
   returning an error. List schedules after an error and remove any unintended
   policy before retrying.

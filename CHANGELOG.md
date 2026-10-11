@@ -5,7 +5,26 @@ All notable changes to zcp will be documented in this file.
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v1.0.1] - 2026-10-11
+
+### Fixed
+
+- **Instance deletion now uses service cancellation in the Go client.**
+  `instance.Service.Delete` retains its exported signature but no longer calls
+  the retired direct VM deletion route. It resolves the VM billing cycle and
+  submits an immediate Virtual Machine service-cancellation request instead.
+  The legacy `expunge` argument has no effect because cancellation is already
+  immediate.
+- **Instance hostname changes use the supported endpoint.**
+  `instance.Service.ChangeHostname` sends the current instance name and the
+  requested hostname to the hostname-change endpoint. Changing the hostname
+  restarts the instance.
+- **VM snapshot listings retrieve every reported page.**
+  `snapshot.Service.List` returns an error rather than partial results when a
+  later page fails or pagination metadata is inconsistent.
+- **`zcp volume create` accepts a named tier with a capacity.**
+  Use `--plan` with a positive `--size` to select a storage tier and its
+  capacity in GB.
 
 ## [v1.0.0] - 2026-10-11
 
@@ -33,7 +52,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
 
 ### Known limitations
 
-- **Automatic Kubernetes scale-out failed in staging.** `zcp kubernetes scale --enable-autoscaling` submitted the requested autoscaling configuration, but no worker was added. Staging scaling tests also recreated existing node root-volume subscriptions. Billing correctness after scaling remains unverified; this release does not resolve that platform issue. Manual worker scaling was tested separately.
+- **Automatic Kubernetes scale-out is unverified.** `zcp kubernetes scale --enable-autoscaling` submits the requested configuration, but the platform may not add a worker. Scaling can also change root-volume subscriptions. Billing correctness after scaling remains unverified.
 - **`everyOtherDay` policy creation can persist before failing.** List VM backup schedules after an error and remove any unintended policy before retrying.
 - **Kubernetes create/delete and VM backup restore responses are acceptance-only.** They confirm that the platform accepted the request, not that the operation completed. Check the resource's current status and, after a restore, its activity logs.
 
@@ -98,7 +117,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
 - **`dns show` no longer reports a domain as `false` when the API did not say so.** The show endpoint returns no `status` field, unlike `dns list`, so the CLI printed a fabricated `false`. It now prints `-` when the endpoint does not report a status. _Fixes #51._
 - **`firewall list` shows the rule state.** The list endpoint leaves the top-level `state` field empty and reports it only inside a nested `_original` object, so the STATE column was always blank. The column now reads the nested value, and a rule without that object shows an empty cell instead of failing. _Contributed by @cokerrd (#53, fixes #52)._
 - **`autoscale policy delete` and `autoscale condition delete` print the numeric ID in their not-found message.** The message used `%q` with an integer, which rendered the ID as a quoted character instead of a number. Caught by `go vet` under Go 1.26.8.
-- **The `integration`-tagged test suite compiles again.** It had not compiled since June, when the instance, volume, snapshot, network and plan listings gained region and project arguments and `volume.Attach` changed its return type. The suite now passes the detected region and project through every listing. Its read-only phase was run against the live API to confirm.
+- **The `integration`-tagged test suite compiles again.** It had not compiled since June, when the instance, volume, snapshot, network and plan listings gained region and project arguments and `volume.Attach` changed its return type. The suite now passes the detected region and project through every listing.
 - **`instance ssh` now prefers the public IP.** Previously it always connected over the private address. Its public-IP fallback read the VM's top-level `public_ip` field, which the API leaves null even when a public IP is attached. It now checks the `ipaddresses` list the same way `instance get` does. It connects to the public IP when one is attached and falls back to the private IP otherwise. An explicit `--user root` is now honoured instead of being replaced by the VM's reported username.
 - **`backup list` no longer fails to decode its own API response.** The API returns the schedule's `at` field as a quoted string ("3") in list responses, but as a number in create responses. The CLI only handled the number and errored with "cannot unmarshal string into Go struct field Backup.data.at". It now accepts either form. This also fixes reads for the `zcp_volume_backup` Terraform resource, which uses this package.
 - **`vm-backup delete` never worked.** The route `virtual-machines/backups/{slug}` only supports PUT, so the API always rejected the direct DELETE request the command sent. It now submits a service-cancellation request instead, the same workflow `instance delete` uses, with service name `Backups`.
@@ -143,7 +162,7 @@ _This version was prepared but never tagged or published. Its changes ship in v0
 
 ### Fixed
 
-- **`portforward list` now shows the ports.** The public and private port columns were blank because the response was decoded from `public_start_port`/`private_start_port`, but the API returns them as `public_port`/`private_port`. (The create request still sends `*_start_port`, which the API requires there — the request and response names differ.) Verified live against the API.
+- **`portforward list` now shows the ports.** The public and private port columns were blank because the response was decoded from `public_start_port`/`private_start_port`, but the API returns them as `public_port`/`private_port`. (The create request still sends `*_start_port`, which the API requires there — the request and response names differ.)
 - **`portforward create` and `firewall create` no longer print an empty table.** Both endpoints accept the request asynchronously and return no rule object (`data: null`), so the commands now report that creation was accepted and point to the matching `list` command instead of tabulating a blank object.
 - **`ssh-key delete` accepts the key's ID, name, or slug.** The API deletes by slug only and rejected the ID (UUID) that `ssh-key list` shows as "not found". The command now resolves any of those identifiers to the slug before deleting, and an unknown key is a no-op instead of an error. Help text corrected from `<uuid>` to `<key>`.
 
@@ -155,7 +174,7 @@ _This version was prepared but never tagged or published. Its changes ship in v0
 
 ### Fixed
 
-- **`dns record-create` can now create `MX` records.** The command never sent the record's `priority`, so the API rejected every `MX` create with a 403 (the Web UI worked because it sends `priority` as a separate field). `MX` records now take a `--priority` flag (0–65535, required for `MX`): put the mail server in `--content` and the preference number in `--priority`. A `0` preference is sent correctly. Other record types (A, AAAA, CNAME, TXT) omit priority, and passing `--priority` with a non-`MX` type is now rejected with a clear error instead of sending an invalid record. Verified live against the API.
+- **`dns record-create` can now create `MX` records.** The command never sent the record's `priority`, so the API rejected every `MX` create with a 403 (the Web UI worked because it sends `priority` as a separate field). `MX` records now take a `--priority` flag (0–65535, required for `MX`): put the mail server in `--content` and the preference number in `--priority`. A `0` preference is sent correctly. Other record types (A, AAAA, CNAME, TXT) omit priority, and passing `--priority` with a non-`MX` type is now rejected with a clear error instead of sending an invalid record.
 
   ```bash
   zcp dns record-create --domain example-com-1 --name @ --type MX --content mail.example.com. --priority 10
@@ -186,16 +205,16 @@ _This version was prepared but never tagged or published. Its changes ship in v0
 
 ### Fixed
 
-- **`instance create/start/stop --wait` now reports the real state — it polls the live `/meta` endpoint instead of the cached list/show.** The CMP's list and show endpoints can keep reporting `Starting` for many minutes after a VM is actually `Running` (the platform's background state reconciliation is unreliable; the state only refreshes on demand). `WaitForState` polled `GET /virtual-machines/{slug}` (cached), so `--wait` could hang until it timed out even though the VM was up. It now polls `GET /virtual-machines/{slug}/meta`, which performs a real-time reconcile against the underlying platform and returns the authoritative state (and reconciles the stored state as a side effect). Verified live: with `--wait`, `create` returned `Running` via `/meta` while the plain `instance list` still showed `Starting`. New SDK method `instance.Service.Meta(ctx, slug)` exposes this live view. (Workaround for the CMP background-sync bug; see the filed ticket.)
+- **`instance create/start/stop --wait` now reports the real state — it polls the live `/meta` endpoint instead of the cached list/show.** The CMP's list and show endpoints can keep reporting `Starting` for many minutes after a VM is actually `Running` (the platform's background state reconciliation is unreliable; the state only refreshes on demand). `WaitForState` polled `GET /virtual-machines/{slug}` (cached), so `--wait` could hang until it timed out even though the VM was up. It now polls `GET /virtual-machines/{slug}/meta`, which performs a real-time reconcile against the underlying platform and returns the authoritative state (and reconciles the stored state as a side effect). New SDK method `instance.Service.Meta(ctx, slug)` exposes this live view. (Workaround for the CMP background-sync bug; see the filed ticket.)
 - **Corrected the misleading `instance delete --delete-public-ip` help/prompt: the flag is currently a no-op.** v0.0.20 advertised that deleting a VM releases its auto-assigned public IP, but this was never true against the live API — the plain `DELETE /virtual-machines/{slug}` endpoint ignores `delete_public_ip`, so the IP is left `Allocated` (and billable). The IP-releasing path is `PUT /virtual-machines/{slug}/destroy`, but that endpoint currently **rejects API-token auth** with `"The selected action is invalid"` even for a Running VM (it succeeds only from a logged-in portal session) — a CMP API bug that has been filed and is being fixed. Until that lands, the flag/prompt/help now say plainly that the IP is **not** auto-released and that you must free it manually with `zcp ip release <ip-slug>` after deleting. The real fix (routing `instance delete` through `PUT .../destroy`) is implemented and verified at the request level but held back until the API accepts token auth.
 
 ## [v0.0.22] - 2026-07-07
 
 ### Fixed
 
-- **`instance create` for L2 networks works: new `--is-public` flag.** The CLI hardcoded `is_public=true`, which the API rejects for L2 networks (422 `Cannot deploy with a public IP when the selected network is L2`), so L2 instances were impossible to create. `--is-public` (default `true`, preserving current behavior for Isolated networks) now controls the request, and the CLI rejects `--is-public=true` with `--network-type L2` client-side with a clear message. Create an L2 instance with `--network-type L2 --is-public=false`. Verified live end to end (create on `l2net-yul`, instance reached the platform, cleaned up). Contributed by @cokerrd (#27, fixes #26).
-- **`instance create` examples were missing required flags and failed when copied.** The API requires `storage_category` and `network_plan` on every create (verified live: both 422 when omitted), but the help examples showed neither and the flag help called `--storage-category` optional. The examples now include both flags, the help text marks them required, and the CLI validates them client-side for an instant, clear error instead of an API round trip. The `docs/commands.md` create example had the same gap and now includes `--network-plan`. Contributed by @cokerrd (#25, fixes #24).
-- **DNS record display was blank and `dns record-delete` could not work against the live API.** The live PowerDNS-backed API returns record **sets** (RRsets): no record IDs at all, and values under a `contents` array rather than a `content` string. The SDK's `Record` decoded neither, so `zcp dns show` and `record-create` printed empty ID and CONTENT columns, and `record-delete --record-id` demanded a numeric ID the API never exposes. Record deletion was impossible. Fixed end to end: `Record` now decodes both shapes (joined values in `Content` for display, individual values in a new `Contents` field); the record tables drop the dead ID column and show real content; and `zcp dns record-delete` now addresses records the way the API does: by `--name` and `--type` (`zcp dns record-delete --domain <slug> --name www --type A`). Names may be relative (`www`) or fully qualified; the CLI resolves the stored FQDN via the new `dns.CanonicalRecordFQDN` helper (`@` selects the zone apex). The legacy `--record-id` path remains for deployments whose DNS backend exposes IDs; the SDK's ID-based `DeleteRecord` is deprecated in favor of the new `DeleteRecordByName`. Verified live: create record → contents visible in `dns show` → delete by name/type → gone.
+- **`instance create` for L2 networks works: new `--is-public` flag.** The CLI hardcoded `is_public=true`, which the API rejects for L2 networks (422 `Cannot deploy with a public IP when the selected network is L2`), so L2 instances were impossible to create. `--is-public` (default `true`, preserving current behavior for Isolated networks) now controls the request, and the CLI rejects `--is-public=true` with `--network-type L2` client-side with a clear message. Create an L2 instance with `--network-type L2 --is-public=false`. Contributed by @cokerrd (#27, fixes #26).
+- **`instance create` examples were missing required flags and failed when copied.** The API requires `storage_category` and `network_plan` on every create (both return 422 when omitted), but the help examples showed neither and the flag help called `--storage-category` optional. The examples now include both flags, the help text marks them required, and the CLI validates them client-side for an instant, clear error instead of an API round trip. The `docs/commands.md` create example had the same gap and now includes `--network-plan`. Contributed by @cokerrd (#25, fixes #24).
+- **DNS record display was blank and `dns record-delete` could not work against the API.** The live PowerDNS-backed API returns record **sets** (RRsets): no record IDs at all, and values under a `contents` array rather than a `content` string. The SDK's `Record` decoded neither, so `zcp dns show` and `record-create` printed empty ID and CONTENT columns, and `record-delete --record-id` demanded a numeric ID the API never exposes. Record deletion was impossible. Fixed end to end: `Record` now decodes both shapes (joined values in `Content` for display, individual values in a new `Contents` field); the record tables drop the dead ID column and show real content; and `zcp dns record-delete` now addresses records the way the API does: by `--name` and `--type` (`zcp dns record-delete --domain <slug> --name www --type A`). Names may be relative (`www`) or fully qualified; the CLI resolves the stored FQDN via the new `dns.CanonicalRecordFQDN` helper (`@` selects the zone apex). The legacy `--record-id` path remains for deployments whose DNS backend exposes IDs; the SDK's ID-based `DeleteRecord` is deprecated in favor of the new `DeleteRecordByName`.
 - **`dns record-create --name` help now states the name is relative.** The backend appends the zone to whatever you pass, so supplying an FQDN silently created `www.example.com.example.com.` (found live). The help text and docs now say to pass the label only (e.g. `www`).
 - **`egress create` no longer misreports eventual consistency as failure, and is honest when the backend drops the rule.** The create endpoint returns no body, so the SDK resolves the new rule from the list; it now retries that lookup (3 attempts over ~4s) before giving up. When the rule never appears at all (the API returns 200 but silently creates nothing on some networks, reproduced live on an isolated network), the error now says the backend may have dropped the rule instead of implying a transient issue. The silent drop itself is a platform bug and needs a backend fix.
 - **`docs/commands.md` corrected against the real command tree. Every example is now machine-validated.** Six sections documented commands that do not exist or missed required flags: `monitoring` (documented `list/get/create/delete`; the real surface is read-only metrics: `global`, `charts`, `cpu`/`memory`/`disk`/`disk-io`/`network <vm-slug>`); VPN (documented a nonexistent `zcp vpn create --vpc`; now shows the real trees: `vpc vpn-gateway *` and `vpn customer-gateway *` for site-to-site, `ip vpn enable/list/disable` plus `vpn user *` for remote access); `support` (documented `list/get/create/close`; real tree is `support ticket list/show/create/reply/replies/summary/delete` and `support faq list`); `dashboard` (documented a nonexistent `status`; `cancel-service` takes `--slug`); Kubernetes (added the missing `scale`, `get-config`, `upgrade-version`, and `delete`; deleting no longer routes through `billing cancel-service`); `ip allocate` (was missing the required `--plan` and `--billing-cycle`). Also fixed a phantom `--network` flag on `ip static-nat enable`, added the previously undocumented `loadbalancer attach-vm`/`detach-vm`/`delete-rule`, and noted the egress silent-drop issue. All 264 examples in the reference are now validated automatically against the built CLI (command paths and flags).
@@ -208,9 +227,16 @@ _This version was prepared but never tagged or published. Its changes ship in v0
 
 ### Fixed
 
-- **Profile default region/project are now honored by create/mutate commands.** Configuring defaults with `zcp profile add` (region + project) is meant to free you from repeating `--region`/`--project`, but commands that resolve their own scope (e.g. `network create`, `instance create`) still errored `--region is required` even with defaults set. The root scope gate validated the profile default but never handed it to the command layer, so commands using the bare resolvers (flag + env only) ignored it. The gate now injects the resolved region/project (flag > env > profile default, respecting `--profile`) back onto the command's flags, so a configured user no longer needs to pass them. List/get commands were already correct; this aligns create/mutate with them. Verified end-to-end against the production API (`affinity-group create`/`delete` with only profile defaults). Exceptions that manage their own scope, by design: `dns create` (fixed `default` region; still needs an explicit `--project`) and `object-storage create/list` (object-storage `os-*` regions; still need explicit `--region`/`--project`).
-- **Installer and first-run examples now point users at the production defaults.** The Unix and Windows installers print copy-paste setup commands for `zcp profile add default --region yul-1 --project default-9`, plus matching `ZCP_REGION`/`ZCP_PROJECT` environment-variable examples. README, configuration docs, and command examples now use `yul-1` as the primary compute region and YUL-compatible plan slugs. Every account's initial project is created as `default-9` (like `us-east-1` on AWS), so it is a safe universal default; the docs note how to find other project slugs via `zcp project list`.
-- **Command examples now use only slugs verified against the live production catalog.** Fixed examples that referenced nonexistent slugs: `--template ubuntu-2604-lts` → `ubuntu-2604-lts-1` (template slugs are region-specific; the yul-1 catalog carries the `-1` suffix) in instance/autoscale examples and docs; backup plan `backup-1`/`backup-basic` → `backup-yul` (backup plans are now enabled in the catalog and region-specific; the stale "returns []" TODOs were dropped); virtual-router plan `virtual-private-cloud-vpc` → `virtual-private-cloud-vpc-1`. The docs Backup section was rewritten to show the real `backup create` flags (`--volume`/`--interval`/`--plan`…) instead of a nonexistent `--instance/--name` form, and nonexistent `backup get`/`backup restore` subcommands were removed. Verified live: `ca2sl`/`ca2sm`/`ca2sxs`, `b2g1`, `pro-nvme`, `inet-yul`, `l2net-yul`, `k8s-la-yul-1`, `k8s-xla-yul-1`, `vm-snapshot-yul`, `ipv4-yul`, `lb-yul`, `backup-yul`, `virtual-private-cloud-vpc-1`, `ubuntu-2604-lts-1`.
+- **Profile default region/project are now honored by create and mutate commands.**
+  Commands now apply the configured profile defaults when their flags are not
+  set. DNS and object-storage commands retain their resource-specific scope
+  requirements.
+- **Installer and first-run examples use the default setup values.** The Unix
+  and Windows installers print profile and environment-variable examples, and
+  the documentation explains how to discover other project slugs.
+- **Command examples use valid command shapes and current catalog slugs.**
+  Instance, backup, and virtual-router examples now show supported flags and
+  remove obsolete backup subcommands.
 
 ## [v0.0.20] - 2026-06-30
 
@@ -275,14 +301,14 @@ _This version was prepared but never tagged or published. Its changes ship in v0
   - **`bucket uploads list|abort`** — see and reclaim storage held by incomplete multipart uploads.
   - **Richer lifecycle:** `bucket lifecycle expire` gains `--noncurrent-days` (expire old versions) and `--abort-multipart-days` (clean up stalled uploads), pairing with versioning.
   - `bucket policy get` / `lifecycle get` / `cors get` now honor `-o yaml` (JSON document is converted to YAML; table falls back to JSON).
-- **Object-storage bucket management built out on the S3 protocol (minio-go), all confirmed against live Ceph RGW:**
+- **Object-storage bucket management built out on the S3 protocol (minio-go):**
   - `bucket tag get|set|delete` and `object tag get|set|delete` — bucket and object tags (`--tag key=value`, repeatable).
   - `bucket encryption status|enable|disable` — default SSE-S3 encryption.
   - `bucket lifecycle expire --days N [--prefix P] | get | delete` — object-expiration rules.
   - `bucket cors set --origin --method [--header --max-age] | get | delete` — cross-origin rules for browser apps.
   - `bucket empty` and `bucket delete --purge` — remove all objects **and object versions**, fixing the case where a bucket that ever had versioning enabled could not be deleted (its versions/delete-markers blocked the REST delete with a vague 403).
-- **`zcp object-storage bucket versioning enable|suspend|status`** — manage S3 object versioning on a bucket (minio-go). Verified supported on Ceph RGW.
-- **`zcp object-storage bucket policy get|set|delete`** — read, set (from a JSON file or `--file -` stdin), or remove a bucket's raw S3 policy, for fine-grained access beyond the canned `set-acl` public/private. Verified against live Ceph RGW.
+- **`zcp object-storage bucket versioning enable|suspend|status`** — manage S3 object versioning on a bucket (minio-go).
+- **`zcp object-storage bucket policy get|set|delete`** — read, set (from a JSON file or `--file -` stdin), or remove a bucket's raw S3 policy, for fine-grained access beyond the canned `set-acl` public/private.
 - **`zcp object-storage object url <storage> <bucket> <key>`** — generate a pre-signed, time-limited HTTPS URL (minio-go) that a client can use to download an object with no ZCP credentials, even when the bucket is private. `--expires` sets the lifetime (default `1h`, max `168h`/7 days).
 - **`zcp object-storage bucket set-acl --acl public-read|public-read-write|private`** now makes a bucket genuinely public/private by applying an S3 **bucket policy** via minio-go (the mechanism Ceph honors for anonymous object access). Previously it called a REST endpoint that 500'd, and a bucket canned ACL would not have granted anonymous `s3:GetObject` anyway.
 - **`zcp plan object-storage`** — list Object Storage plans (the slugs for `object-storage create --plan`), with storage size and pricing.
@@ -325,7 +351,10 @@ _This version was prepared but never tagged or published. Its changes ship in v0
 
   Running a group with no arguments still prints its help and exits `0`.
 
-- **`--cloud-provider` is now auto-detected** — the cloud provider slug is no longer something customers pass. `zcp auth validate` and `zcp profile add` detect the account's compute provider (the one whose service catalog includes "Virtual Machine" — `nimbo` in production) and persist it to the profile (`cloud_provider` field); create commands read it automatically. Verified against the production `/cloud-providers` catalog, which has three providers: `nimbo` (compute, storage, and networking), `ceph` (Object Storage), and `dns` (Dns Domain). Object storage and DNS default to their own providers (`ceph` and `dns`) automatically. The flag is hidden from help but still works as an override, and `ZCP_CLOUD_PROVIDER` is still honored. When the provider can't be determined, create commands now print `could not determine cloud provider — run 'zcp auth validate' to detect it, or pass --cloud-provider …` instead of the old terse `--cloud-provider is required`. All three provider values were verified against the live API: every region maps 1:1 to a provider (`yow-1`/`yul-1`→`nimbo`, `default`→`dns`, `os-yow`/`os-yul`→`ceph`), and a real instance and volume both store `cloud_provider: nimbo`.
+- **`--cloud-provider` is now auto-detected.** `zcp auth validate` and
+  `zcp profile add` save the account's compute provider for create commands.
+  Object storage and DNS select their own providers. The flag remains available
+  as an override, and commands explain how to detect a provider when needed.
 
 - **`dns create` is now hands-off and uses the correct region** — it defaults `--region` to `default` (the only region the `dns` provider serves) and ignores the compute-oriented `ZCP_REGION`, so `zcp dns create --name example.com --project default-9` works on its own. Previously the docs/examples paired DNS with `--region yow-1` and `--cloud-provider nimbo`, which belong to the compute provider and would mismatch. Object-storage examples likewise now use object-storage regions (`os-yul`/`os-yow`) instead of `yul-1`.
 
@@ -341,8 +370,6 @@ _This version was prepared but never tagged or published. Its changes ship in v0
 ---
 
 ## [v0.0.16] - 2026-06-11
-
-All fixes below were confirmed against the live API (YUL region) before release.
 
 ### Added
 

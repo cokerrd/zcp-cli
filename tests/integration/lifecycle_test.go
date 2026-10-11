@@ -17,15 +17,20 @@
 //	ZCP_TEST_TEMPLATE        Template slug        (default: auto-detected Ubuntu 24.04)
 //	ZCP_TEST_PLAN            VM plan slug         (default: auto-detected Small Instance)
 //	ZCP_TEST_STORAGE_PLAN    Block storage plan   (default: auto-detected Small-Disk)
-//	ZCP_TEST_NETWORK_SLUG    Network slug         (default: auto-detected first network)
 //	ZCP_TEST_BILLING_CYCLE   Billing cycle slug   (default: "hourly")
-//	ZCP_TEST_STORAGE_CAT     Storage category slug(default: "ssd")
+//	ZCP_TEST_STORAGE_CAT     Storage category slug(required with ZCP_TEST_STORAGE_PLAN)
+//	ZCP_TEST_NETWORK_PLAN    Network plan slug    (default: auto-detected active plan)
+//	ZCP_TEST_SNAPSHOT_PLAN   Snapshot plan slug   (default: auto-detected active plan)
+//	ZCP_TEST_API_URL         API base URL (default: configured profile)
+//	ZCP_TEST_BEARER_TOKEN    Bearer token (default: configured profile)
+//	ZCP_TEST_PREFIX          Prefix for resources created by this run (default: "zcp-test")
 package integration
 
 import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -43,6 +48,7 @@ import (
 	"github.com/zsoftly/zcp-cli/pkg/api/region"
 	"github.com/zsoftly/zcp-cli/pkg/api/snapshot"
 	"github.com/zsoftly/zcp-cli/pkg/api/sshkey"
+	"github.com/zsoftly/zcp-cli/pkg/api/storagecategory"
 	"github.com/zsoftly/zcp-cli/pkg/api/template"
 	"github.com/zsoftly/zcp-cli/pkg/api/volume"
 	"github.com/zsoftly/zcp-cli/pkg/httpclient"
@@ -50,9 +56,23 @@ import (
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
+var integrationRunID = func() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%08x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}()
+
 // testID returns a unique prefix for test resources to avoid name collisions.
 func testID() string {
-	return fmt.Sprintf("zcp-test-%d", time.Now().UnixMilli()%100000)
+	prefix := env("ZCP_TEST_PREFIX", "zcp-test")
+	const runSuffixLength = 7
+	const maxPrefixLength = 7
+	if len(prefix) > maxPrefixLength {
+		prefix = prefix[:maxPrefixLength]
+	}
+	return prefix + "-" + integrationRunID[:runSuffixLength]
 }
 
 // env returns the environment variable value or fallback.
@@ -82,10 +102,11 @@ func setupClient(t *testing.T) *httpclient.Client {
 	if err != nil {
 		t.Fatalf("resolving profile: %v", err)
 	}
-	apiURL := config.ActiveAPIURL(profile, "")
+	apiURL := env("ZCP_TEST_API_URL", config.ActiveAPIURL(profile, ""))
+	token := env("ZCP_TEST_BEARER_TOKEN", profile.BearerToken)
 	client := httpclient.New(httpclient.Options{
 		BaseURL:     apiURL,
-		BearerToken: profile.BearerToken,
+		BearerToken: token,
 		Timeout:     2 * time.Minute,
 		Debug:       os.Getenv("ZCP_TEST_DEBUG") != "",
 		DebugOut:    os.Stderr,
@@ -139,7 +160,7 @@ func waitForInstance(t *testing.T, svc *instance.Service, ctx context.Context, s
 		case <-ctx.Done():
 			t.Fatalf("timed out waiting for instance to reach %v", targetStates)
 		case <-ticker.C:
-			vm, err := svc.Get(ctx, slug)
+			vm, err := svc.Meta(ctx, slug)
 			if err != nil {
 				t.Fatalf("polling instance state: %v", err)
 			}
@@ -155,6 +176,331 @@ func waitForInstance(t *testing.T, svc *instance.Service, ctx context.Context, s
 			}
 		}
 	}
+}
+
+// waitForInstanceHostname waits for the asynchronous hostname change to finish.
+// The API can update a VM slug along with its hostname, so the immutable record
+// ID anchors the lookup. currentSlug is updated as soon as the record is found
+// so cleanup can still cancel the VM if the operation later fails or times out.
+func waitForInstanceHostname(t *testing.T, svc *instance.Service, ctx context.Context, region, project, id, hostname string, currentSlug *string) *instance.VirtualMachine {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		vms, err := svc.List(ctx, region, project)
+		if err != nil {
+			t.Fatalf("listing instances while waiting for hostname change: %v", err)
+		}
+		for i := range vms {
+			vm := &vms[i]
+			if vm.ID != id {
+				continue
+			}
+			if vm.Slug != "" {
+				*currentSlug = vm.Slug
+			}
+			if vm.Name == hostname && vm.Hostname == hostname && strings.EqualFold(vm.State, "Running") {
+				t.Logf("  instance name and hostname changed to %s", hostname)
+				return vm
+			}
+			if strings.EqualFold(vm.State, "Error") {
+				t.Fatal("instance entered error state while changing hostname")
+			}
+			t.Logf("    name=%s hostname=%s state=%s", vm.Name, vm.Hostname, vm.State)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for instance hostname to change to %s", hostname)
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForInstanceAbsent(t *testing.T, svc *instance.Service, ctx context.Context, region, project, slug string) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		vms, err := svc.List(ctx, region, project)
+		if err != nil {
+			t.Fatalf("listing instances while waiting for %s deletion: %v", slug, err)
+		}
+		if !containsInstance(vms, slug) {
+			t.Logf("  instance %s is absent", slug)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for instance %s deletion", slug)
+		case <-ticker.C:
+		}
+	}
+}
+
+func containsInstance(vms []instance.VirtualMachine, slug string) bool {
+	for _, vm := range vms {
+		if vm.Slug == slug {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForInstanceAbsentResult(ctx context.Context, svc *instance.Service, region, project, slug string) error {
+	return waitUntilAbsent(ctx, func() (bool, error) {
+		vms, err := svc.List(ctx, region, project)
+		return !containsInstance(vms, slug), err
+	})
+}
+
+func waitForVolumeAbsentResult(ctx context.Context, svc *volume.Service, region, project, slug string) error {
+	return waitUntilAbsent(ctx, func() (bool, error) {
+		volumes, err := svc.List(ctx, region, project)
+		if err != nil {
+			return false, err
+		}
+		for _, volume := range volumes {
+			if volume.Slug == slug {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+}
+
+func waitUntilAbsent(ctx context.Context, check func() (bool, error)) error {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		absent, err := check()
+		if err != nil {
+			return err
+		}
+		if absent {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForVolumeAbsent(t *testing.T, svc *volume.Service, ctx context.Context, region, project, slug string) {
+	t.Helper()
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		volumes, err := svc.List(ctx, region, project)
+		if err != nil {
+			t.Fatalf("listing volumes while waiting for %s deletion: %v", slug, err)
+		}
+		found := false
+		for _, volume := range volumes {
+			found = found || volume.Slug == slug
+		}
+		if !found {
+			t.Logf("  volume %s is absent", slug)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timed out waiting for volume %s deletion", slug)
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForVolumeDetached(t *testing.T, svc *volume.Service, ctx context.Context, region, project, slug string) {
+	t.Helper()
+	if err := waitForVolumeDetachedResult(ctx, svc, region, project, slug); err != nil {
+		t.Fatalf("waiting for volume %s detachment: %v", slug, err)
+	}
+	t.Logf("  volume %s is detached", slug)
+}
+
+func waitForVolumeDetachedResult(ctx context.Context, svc *volume.Service, region, project, slug string) error {
+	return waitUntilAbsent(ctx, func() (bool, error) {
+		volumes, err := svc.List(ctx, region, project)
+		if err != nil {
+			return false, err
+		}
+		for _, volume := range volumes {
+			if volume.Slug == slug && volume.VirtualMachineID == "" {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+}
+
+func waitForVolumeAttached(t *testing.T, svc *volume.Service, ctx context.Context, region, project, slug, vmID string) {
+	t.Helper()
+	if err := waitForVolumeAttachedResult(ctx, svc, region, project, slug, vmID); err != nil {
+		t.Fatalf("waiting for volume %s attachment to instance %s: %v", slug, vmID, err)
+	}
+	t.Logf("  volume %s is attached to instance %s", slug, vmID)
+}
+
+func waitForVolumeAttachedResult(ctx context.Context, svc *volume.Service, region, project, slug, vmID string) error {
+	return waitUntilAbsent(ctx, func() (bool, error) {
+		volumes, err := svc.List(ctx, region, project)
+		if err != nil {
+			return false, err
+		}
+		for _, volume := range volumes {
+			if volume.Slug == slug && volume.VirtualMachineID == vmID {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+}
+
+func deleteVolumeAfterDetach(ctx context.Context, svc *volume.Service, region, project, slug string) error {
+	if _, err := svc.Detach(ctx, slug); err != nil {
+		detached, checkErr := isVolumeDetached(ctx, svc, region, project, slug)
+		if checkErr != nil {
+			return fmt.Errorf("detaching volume: %w (checking state: %v)", err, checkErr)
+		}
+		if !detached {
+			return fmt.Errorf("detaching volume: %w", err)
+		}
+	} else if err := waitForVolumeDetachedResult(ctx, svc, region, project, slug); err != nil {
+		return fmt.Errorf("waiting for volume detachment: %w", err)
+	}
+	if err := svc.Delete(ctx, slug); err != nil {
+		return fmt.Errorf("deleting volume: %w", err)
+	}
+	if err := waitForVolumeAbsentResult(ctx, svc, region, project, slug); err != nil {
+		return fmt.Errorf("waiting for volume removal: %w", err)
+	}
+	return nil
+}
+
+func isVolumeDetached(ctx context.Context, svc *volume.Service, region, project, slug string) (bool, error) {
+	volumes, err := svc.List(ctx, region, project)
+	if err != nil {
+		return false, err
+	}
+	for _, volume := range volumes {
+		if volume.Slug == slug {
+			return volume.VirtualMachineID == "", nil
+		}
+	}
+	return true, nil
+}
+
+func waitForSnapshotAbsent(t *testing.T, svc *snapshot.Service, ctx context.Context, region, project, slug string) {
+	t.Helper()
+	if err := waitForSnapshotAbsentResult(ctx, svc, region, project, slug); err != nil {
+		t.Fatalf("waiting for snapshot %s deletion: %v", slug, err)
+	}
+	t.Logf("  snapshot %s is absent", slug)
+}
+
+func waitForSnapshotAbsentResult(ctx context.Context, svc *snapshot.Service, region, project, slug string) error {
+	return waitUntilAbsent(ctx, func() (bool, error) {
+		snapshots, err := svc.List(ctx, region, project)
+		if err != nil {
+			return false, err
+		}
+		for _, item := range snapshots {
+			if item.Slug == slug {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+}
+
+func waitForNetworkAbsent(t *testing.T, svc *network.Service, ctx context.Context, region, project, slug string) {
+	t.Helper()
+	if err := waitForNetworkAbsentResult(ctx, svc, region, project, slug); err != nil {
+		t.Fatalf("waiting for network %s deletion: %v", slug, err)
+	}
+	t.Logf("  network %s is absent", slug)
+}
+
+func waitForNetworkAbsentResult(ctx context.Context, svc *network.Service, region, project, slug string) error {
+	return waitUntilAbsent(ctx, func() (bool, error) {
+		networks, err := svc.List(ctx, region, project)
+		if err != nil {
+			return false, err
+		}
+		for _, item := range networks {
+			if item.Slug == slug {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+}
+
+func networkSlugByName(ctx context.Context, svc *network.Service, region, project, name string) (string, error) {
+	networks, err := svc.List(ctx, region, project)
+	if err != nil {
+		return "", err
+	}
+	for _, item := range networks {
+		if item.Name == name {
+			return item.Slug, nil
+		}
+	}
+	return "", nil
+}
+
+func instanceSlugByName(ctx context.Context, svc *instance.Service, region, project, name string) (string, error) {
+	vms, err := svc.List(ctx, region, project)
+	if err != nil {
+		return "", err
+	}
+	for _, vm := range vms {
+		if vm.Name == name {
+			return vm.Slug, nil
+		}
+	}
+	return "", nil
+}
+
+func instanceSlugByID(ctx context.Context, svc *instance.Service, region, project, id string) (string, error) {
+	vms, err := svc.List(ctx, region, project)
+	if err != nil {
+		return "", err
+	}
+	for _, vm := range vms {
+		if vm.ID == id {
+			return vm.Slug, nil
+		}
+	}
+	return "", nil
+}
+
+func volumeSlugByName(ctx context.Context, svc *volume.Service, region, project, name string) (string, error) {
+	volumes, err := svc.List(ctx, region, project)
+	if err != nil {
+		return "", err
+	}
+	for _, item := range volumes {
+		if item.Name == name {
+			return item.Slug, nil
+		}
+	}
+	return "", nil
+}
+
+func snapshotSlugByName(ctx context.Context, svc *snapshot.Service, region, project, name string) (string, error) {
+	snapshots, err := svc.List(ctx, region, project)
+	if err != nil {
+		return "", err
+	}
+	for _, item := range snapshots {
+		if item.Name == name {
+			return item.Slug, nil
+		}
+	}
+	return "", nil
 }
 
 // ─── resource auto-detection ────────────────────────────────────────────────
@@ -272,9 +618,13 @@ func detectVMPlan(t *testing.T, client *httpclient.Client, regionSlug string) st
 	return ""
 }
 
-func detectStoragePlan(t *testing.T, client *httpclient.Client, regionSlug string) string {
+func detectStoragePlan(t *testing.T, client *httpclient.Client, regionSlug string) (string, string) {
 	if v := os.Getenv("ZCP_TEST_STORAGE_PLAN"); v != "" {
-		return v
+		category := os.Getenv("ZCP_TEST_STORAGE_CAT")
+		if category == "" {
+			t.Fatal("ZCP_TEST_STORAGE_CAT must be set when ZCP_TEST_STORAGE_PLAN is set")
+		}
+		return v, category
 	}
 	ctx := testContext(t, 30*time.Second)
 	svc := plan.NewService(client)
@@ -282,47 +632,63 @@ func detectStoragePlan(t *testing.T, client *httpclient.Client, regionSlug strin
 	if err != nil {
 		t.Fatalf("listing block storage plans: %v", err)
 	}
-	for _, pref := range []string{"Small-Disk", "Small"} {
-		for _, p := range plans {
-			if strings.Contains(p.Name, pref) && p.Status && !p.IsCustom {
-				t.Logf("  auto-detected storage plan: %s (%s)", p.Name, p.Slug)
-				return p.Slug
+	categories, err := storagecategory.NewService(client).List(ctx, regionSlug)
+	if err != nil {
+		t.Fatalf("listing storage categories: %v", err)
+	}
+	categoryByID := make(map[string]string, len(categories))
+	for _, category := range categories {
+		if category.Status {
+			categoryByID[category.ID] = category.Slug
+		}
+	}
+	for _, p := range plans {
+		if p.Status {
+			if category := categoryByID[p.StorageCategoryID]; category != "" {
+				t.Logf("  auto-detected storage plan: %s (%s), category: %s", p.Name, p.Slug, category)
+				return p.Slug, category
 			}
 		}
 	}
-	// pick first non-custom
-	for _, p := range plans {
-		if p.Status && !p.IsCustom {
-			t.Logf("  using first storage plan: %s (%s)", p.Name, p.Slug)
-			return p.Slug
-		}
-	}
-	t.Fatal("no storage plans available")
-	return ""
+	t.Fatal("no active block storage plan with an active storage category available")
+	return "", ""
 }
 
-func detectNetworkSlug(t *testing.T, client *httpclient.Client, regionSlug, projectSlug string) string {
-	if v := os.Getenv("ZCP_TEST_NETWORK_SLUG"); v != "" {
+func detectNetworkPlan(t *testing.T, client *httpclient.Client, regionSlug string) string {
+	if v := os.Getenv("ZCP_TEST_NETWORK_PLAN"); v != "" {
 		return v
 	}
 	ctx := testContext(t, 30*time.Second)
-	svc := network.NewService(client)
-	nets, err := svc.List(ctx, regionSlug, projectSlug)
+	plans, err := plan.NewService(client).List(ctx, plan.ServiceNetwork, regionSlug)
 	if err != nil {
-		t.Fatalf("listing networks: %v", err)
+		t.Fatalf("listing network plans: %v", err)
 	}
-	// Prefer default network
-	for _, n := range nets {
-		if n.IsDefault {
-			t.Logf("  auto-detected default network: %s (%s)", n.Name, n.Slug)
-			return n.Slug
+	for _, p := range plans {
+		if p.Status {
+			t.Logf("  auto-detected network plan: %s (%s)", p.Name, p.Slug)
+			return p.Slug
 		}
 	}
-	if len(nets) > 0 {
-		t.Logf("  auto-detected first network: %s (%s)", nets[0].Name, nets[0].Slug)
-		return nets[0].Slug
+	t.Fatal("no active network plan available")
+	return ""
+}
+
+func detectSnapshotPlan(t *testing.T, client *httpclient.Client, regionSlug string) string {
+	if v := os.Getenv("ZCP_TEST_SNAPSHOT_PLAN"); v != "" {
+		return v
 	}
-	t.Fatal("no suitable network found — set ZCP_TEST_NETWORK_SLUG")
+	ctx := testContext(t, 30*time.Second)
+	plans, err := plan.NewService(client).List(ctx, plan.ServiceVMSnapshot, regionSlug)
+	if err != nil {
+		t.Fatalf("listing VM snapshot plans: %v", err)
+	}
+	for _, p := range plans {
+		if p.Status {
+			t.Logf("  auto-detected VM snapshot plan: %s (%s)", p.Name, p.Slug)
+			return p.Slug
+		}
+	}
+	t.Fatal("no active VM snapshot plan available")
 	return ""
 }
 
@@ -332,6 +698,44 @@ func TestPhase1_SSHKeyLifecycle(t *testing.T) {
 	client := setupClient(t)
 	ctx := testContext(t, 60*time.Second)
 	svc := sshkey.NewService(client)
+	var keySlug string
+	t.Cleanup(func() {
+		if keySlug == "" {
+			return
+		}
+		cleanCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		keys, err := svc.List(cleanCtx)
+		if err != nil {
+			t.Errorf("cleanup listing SSH keys: %v", err)
+			return
+		}
+		found := false
+		for _, item := range keys {
+			if item.Slug == keySlug {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return
+		}
+		if err := svc.Delete(cleanCtx, keySlug); err != nil {
+			t.Errorf("cleanup deleting SSH key %s: %v", keySlug, err)
+			return
+		}
+		keys, err = svc.List(cleanCtx)
+		if err != nil {
+			t.Errorf("cleanup listing SSH keys after delete: %v", err)
+			return
+		}
+		for _, item := range keys {
+			if item.Slug == keySlug {
+				t.Errorf("cleanup SSH key %s remains listed", keySlug)
+				return
+			}
+		}
+	})
 	keyName := testID() + "-key"
 
 	// project and region are mandatory — the API derives the cloud provider
@@ -354,6 +758,7 @@ func TestPhase1_SSHKeyLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating SSH key: %v", err)
 	}
+	keySlug = key.Slug
 	t.Logf("  created SSH key: slug=%s name=%s", key.Slug, key.Name)
 
 	// 2. List and verify it exists
@@ -390,8 +795,10 @@ func TestPhase1_SSHKeyLifecycle(t *testing.T) {
 	for _, k := range keys {
 		if k.Slug == key.Slug {
 			t.Errorf("deleted SSH key %s still appears in list", key.Slug)
+			return
 		}
 	}
+	keySlug = ""
 	t.Log("  SSH key no longer in list — lifecycle complete")
 }
 
@@ -405,6 +812,7 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 	instanceSvc := instance.NewService(client)
 	volumeSvc := volume.NewService(client)
 	snapshotSvc := snapshot.NewService(client)
+	networkSvc := network.NewService(client)
 
 	// Auto-detect resources
 	t.Log("=== Resource Detection ===")
@@ -412,74 +820,180 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 	projectSlug := detectProject(t, client)
 	templateSlug := detectTemplate(t, client, regionSlug)
 	vmPlanSlug := detectVMPlan(t, client, regionSlug)
-	storagePlanSlug := detectStoragePlan(t, client, regionSlug)
-	networkSlug := detectNetworkSlug(t, client, regionSlug, projectSlug)
+	storagePlanSlug, storageCategory := detectStoragePlan(t, client, regionSlug)
+	networkPlanSlug := detectNetworkPlan(t, client, regionSlug)
+	snapshotPlanSlug := detectSnapshotPlan(t, client, regionSlug)
 	billingCycle := env("ZCP_TEST_BILLING_CYCLE", "hourly")
-	storageCategory := env("ZCP_TEST_STORAGE_CAT", "ssd")
+	rootDiskSize := 20
+	dataDiskSize := 10
 	vmName := testID() + "-vm"
 	volName := testID() + "-vol"
+	networkName := testID() + "-net"
 
 	// Track resources for cleanup (slugs, not UUIDs)
-	var vmSlug, volSlug string
+	var vmSlug, vmID, volSlug, snapSlug, networkSlug string
 	tagCreated := false // tracks whether we created a tag (cleanup uses key-based delete)
 
-	// Cleanup function — always runs, even on failure
+	// Cleanup function — always runs, even on failure. Each dependent resource
+	// gets its own deadline so a slow prior deletion cannot prevent later cleanup.
 	t.Cleanup(func() {
-		cleanCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		t.Log("=== Cleanup ===")
+		withCleanupContext := func(timeout time.Duration, fn func(context.Context)) {
+			cleanCtx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+			fn(cleanCtx)
+		}
 
+		t.Log("=== Cleanup ===")
+		if snapSlug != "" {
+			withCleanupContext(5*time.Minute, func(cleanCtx context.Context) {
+				t.Logf("  deleting snapshot %s", snapSlug)
+				if err := snapshotSvc.Delete(cleanCtx, snapSlug); err != nil {
+					t.Errorf("cleanup deleting snapshot %s: %v", snapSlug, err)
+				} else if err := waitForSnapshotAbsentResult(cleanCtx, snapshotSvc, regionSlug, projectSlug, snapSlug); err != nil {
+					t.Errorf("cleanup waiting for snapshot %s removal: %v", snapSlug, err)
+				} else {
+					snapSlug = ""
+				}
+			})
+		}
 		if tagCreated && vmSlug != "" {
-			t.Logf("  deleting tag lifecycle-test from %s", vmSlug)
-			if err := instanceSvc.DeleteTag(cleanCtx, vmSlug, "lifecycle-test"); err != nil {
-				t.Logf("  WARNING: tag delete: %v", err)
-			}
+			withCleanupContext(time.Minute, func(cleanCtx context.Context) {
+				t.Logf("  deleting tag lifecycle-test from %s", vmSlug)
+				if err := instanceSvc.DeleteTag(cleanCtx, vmSlug, "lifecycle-test"); err != nil {
+					t.Errorf("cleanup deleting tag: %v", err)
+				}
+			})
 		}
 		if volSlug != "" {
-			// Try detach first (may fail if not attached — that's fine)
-			t.Logf("  detaching volume %s (if attached)", volSlug)
-			volumeSvc.Detach(cleanCtx, volSlug)
-			time.Sleep(10 * time.Second)
-			// Note: no Delete endpoint in current STKCNSL volume API;
-			// volumes are cleaned up via the console if needed.
-			t.Logf("  NOTE: volume %s must be deleted manually (no delete API)", volSlug)
+			withCleanupContext(5*time.Minute, func(cleanCtx context.Context) {
+				t.Logf("  detaching and deleting volume %s", volSlug)
+				if err := deleteVolumeAfterDetach(cleanCtx, volumeSvc, regionSlug, projectSlug, volSlug); err != nil {
+					t.Errorf("cleanup removing volume %s: %v", volSlug, err)
+				} else {
+					volSlug = ""
+				}
+			})
 		}
+		vmRemoved := vmSlug == ""
 		if vmSlug != "" {
-			// Stop instance before cleanup ends — no Destroy endpoint in STKCNSL API
-			t.Logf("  stopping instance %s for cleanup", vmSlug)
-			if _, err := instanceSvc.Stop(cleanCtx, vmSlug); err != nil {
-				t.Logf("  WARNING: instance stop: %v", err)
-			}
-			t.Logf("  NOTE: instance %s must be destroyed manually (no destroy API)", vmSlug)
+			withCleanupContext(10*time.Minute, func(cleanCtx context.Context) {
+				if vmID != "" {
+					currentSlug, err := instanceSlugByID(cleanCtx, instanceSvc, regionSlug, projectSlug, vmID)
+					if err != nil {
+						t.Errorf("cleanup resolving instance ID %s: %v", vmID, err)
+						return
+					}
+					if currentSlug == "" {
+						vmSlug = ""
+						vmRemoved = true
+						return
+					}
+					vmSlug = currentSlug
+				}
+				t.Logf("  cancelling instance %s", vmSlug)
+				if err := instanceSvc.Delete(cleanCtx, vmSlug, false, false); err != nil {
+					t.Errorf("cleanup cancelling instance %s: %v", vmSlug, err)
+				} else if err := waitForInstanceAbsentResult(cleanCtx, instanceSvc, regionSlug, projectSlug, vmSlug); err != nil {
+					t.Errorf("cleanup waiting for instance %s removal: %v", vmSlug, err)
+				} else {
+					vmSlug = ""
+					vmRemoved = true
+				}
+			})
+		}
+		if networkSlug != "" && vmRemoved {
+			withCleanupContext(5*time.Minute, func(cleanCtx context.Context) {
+				t.Logf("  deleting network %s", networkSlug)
+				if err := networkSvc.Delete(cleanCtx, networkSlug); err != nil {
+					t.Errorf("cleanup deleting network %s: %v", networkSlug, err)
+				} else if err := waitForNetworkAbsentResult(cleanCtx, networkSvc, regionSlug, projectSlug, networkSlug); err != nil {
+					t.Errorf("cleanup waiting for network %s removal: %v", networkSlug, err)
+				} else {
+					networkSlug = ""
+				}
+			})
 		}
 		t.Log("  cleanup complete")
 	})
 
-	// ── Step 1: Create Instance ─────────────────────────────────────────
-	t.Log("=== Step 1: Create Instance ===")
+	// ── Step 1: Create isolated network ─────────────────────────────────
+	t.Log("=== Step 1: Create Isolated Network ===")
+	networkCtx := testContext(t, 5*time.Minute)
+	net, err := networkSvc.Create(networkCtx, network.CreateRequest{
+		Name:          networkName,
+		CloudProvider: cloudProviderSlug,
+		Project:       projectSlug,
+		Region:        regionSlug,
+		Type:          "Isolated",
+		NetworkPlan:   networkPlanSlug,
+		BillingCycle:  billingCycle,
+	})
+	if err != nil {
+		// A failed response can still follow a successful asynchronous create. Find
+		// only this run's uniquely named network so cleanup can remove it.
+		if createdSlug, lookupErr := networkSlugByName(testContext(t, time.Minute), networkSvc, regionSlug, projectSlug, networkName); lookupErr != nil {
+			t.Logf("  could not check whether network %q was created: %v", networkName, lookupErr)
+		} else {
+			networkSlug = createdSlug
+		}
+		t.Fatalf("creating isolated network: %v", err)
+	}
+	networkSlug = net.Slug
+	if networkSlug == "" {
+		if createdSlug, lookupErr := networkSlugByName(testContext(t, time.Minute), networkSvc, regionSlug, projectSlug, networkName); lookupErr != nil {
+			t.Fatalf("network create returned an empty slug and lookup failed: %v", lookupErr)
+		} else if createdSlug == "" {
+			t.Fatal("network create returned an empty slug")
+		} else {
+			networkSlug = createdSlug
+		}
+	}
+	t.Logf("  created isolated network: slug=%s", networkSlug)
+
+	// ── Step 2: Create Instance ─────────────────────────────────────────
+	t.Log("=== Step 2: Create Instance ===")
 	createCtx := testContext(t, 10*time.Minute)
 	pw := "TestP@ss1234!"
 	vm, err := instanceSvc.Create(createCtx, instance.CreateRequest{
-		Name:            vmName,
-		Hostname:        vmName,
-		CloudProvider:   cloudProviderSlug,
-		Project:         projectSlug,
-		Region:          regionSlug,
-		BootSource:      "template",
-		Template:        templateSlug,
-		Plan:            vmPlanSlug,
+		Name:             vmName,
+		Hostname:         vmName,
+		CloudProvider:    cloudProviderSlug,
+		Project:          projectSlug,
+		Region:           regionSlug,
+		BootSource:       "image",
+		Server:           "cloud-compute",
+		Template:         templateSlug,
+		Plan:             vmPlanSlug,
+		BlockstoragePlan: storagePlanSlug,
+		BlockstorageCustomPlan: &instance.BlockstorageCustomPlan{
+			Storage: rootDiskSize,
+		},
 		BillingCycle:    billingCycle,
 		StorageCategory: storageCategory,
 		IsPublic:        false,
-		NetworkType:     "isolated",
+		NetworkType:     "Isolated",
 		Networks:        []string{networkSlug},
 		Password:        &pw,
 		Addons:          []string{},
 	})
 	if err != nil {
+		if createdSlug, lookupErr := instanceSlugByName(testContext(t, time.Minute), instanceSvc, regionSlug, projectSlug, vmName); lookupErr != nil {
+			t.Logf("  could not check whether instance %q was created: %v", vmName, lookupErr)
+		} else {
+			vmSlug = createdSlug
+		}
 		t.Fatalf("creating instance: %v", err)
 	}
 	vmSlug = vm.Slug
+	if vmSlug == "" {
+		if createdSlug, lookupErr := instanceSlugByName(testContext(t, time.Minute), instanceSvc, regionSlug, projectSlug, vmName); lookupErr != nil {
+			t.Fatalf("instance create returned an empty slug and lookup failed: %v", lookupErr)
+		} else if createdSlug == "" {
+			t.Fatal("instance create returned an empty slug")
+		} else {
+			vmSlug = createdSlug
+		}
+	}
 	t.Logf("  created instance: slug=%s name=%s state=%s", vm.Slug, vm.Name, vm.State)
 
 	// Wait for Running state
@@ -516,19 +1030,29 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 	if !strings.EqualFold(vmDetail.State, "Running") && !strings.EqualFold(vmDetail.State, "running") {
 		t.Errorf("expected Running, got %s", vmDetail.State)
 	}
+	if vmDetail.ID == "" {
+		t.Fatal("instance get returned an empty ID")
+	}
+	vm.ID = vmDetail.ID
+	vmID = vmDetail.ID
 
 	// ── Step 4: Rename Instance (ChangeHostname) ────────────────────────
 	t.Log("=== Step 4: Rename Instance ===")
-	renameCtx := testContext(t, 30*time.Second)
+	renameCtx := testContext(t, 10*time.Minute)
 	newName := vmName + "-renamed"
 	_, err = instanceSvc.ChangeHostname(renameCtx, vmSlug, instance.ChangeLabelRequest{
-		Name:     newName,
+		Name:     vmDetail.Name,
 		Hostname: newName,
 	})
 	if err != nil {
 		t.Fatalf("renaming instance: %v", err)
 	}
-	t.Logf("  renamed to: %s", newName)
+	renamedVM := waitForInstanceHostname(t, instanceSvc, renameCtx, regionSlug, projectSlug, vmDetail.ID, newName, &vmSlug)
+	if renamedVM.Slug == "" {
+		t.Fatal("hostname change returned an empty instance slug")
+	}
+	vmSlug = renamedVM.Slug
+	t.Logf("  renamed to: %s (slug=%s)", newName, vmSlug)
 
 	// ── Step 5: Tag Instance ────────────────────────────────────────────
 	t.Log("=== Step 5: Tag Instance ===")
@@ -537,23 +1061,21 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 		Key: "lifecycle-test", Value: "true",
 	})
 	if err != nil {
-		t.Logf("  SKIP: tag creation failed: %v", err)
-	} else {
-		tagCreated = true
-		t.Logf("  created tag: key=lifecycle-test value=true on %s", vmSlug)
+		t.Fatalf("creating tag: %v", err)
 	}
+	tagCreated = true
+	t.Logf("  created tag: key=lifecycle-test value=true on %s", vmSlug)
 
 	// ── Step 6: List Addons (replaces old ListNetworks) ─────────────────
 	t.Log("=== Step 6: List Instance Addons ===")
 	addonCtx := testContext(t, 30*time.Second)
 	addons, err := instanceSvc.ListAddons(addonCtx, vmSlug)
 	if err != nil {
-		t.Logf("  SKIP: listing addons failed: %v", err)
-	} else {
-		t.Logf("  instance has %d addon(s)", len(addons))
-		for _, a := range addons {
-			t.Logf("    addon: %s slug=%s status=%v", a.Name, a.Slug, a.Status)
-		}
+		t.Fatalf("listing addons: %v", err)
+	}
+	t.Logf("  instance has %d addon(s)", len(addons))
+	for _, a := range addons {
+		t.Logf("    addon: %s slug=%s status=%v", a.Name, a.Slug, a.Status)
 	}
 
 	// ── Step 7: Create Data Volume ──────────────────────────────────────
@@ -567,14 +1089,32 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 		BillingCycle:    billingCycle,
 		StorageCategory: storageCategory,
 		Plan:            storagePlanSlug,
+		IsCustomPlan:    true,
+		CustomPlan:      &volume.CustomPlanStorage{Storage: dataDiskSize},
 	})
 	if err != nil {
+		if createdSlug, lookupErr := volumeSlugByName(testContext(t, time.Minute), volumeSvc, regionSlug, projectSlug, volName); lookupErr != nil {
+			t.Logf("  could not check whether volume %q was created: %v", volName, lookupErr)
+		} else {
+			volSlug = createdSlug
+		}
 		t.Fatalf("creating volume: %v", err)
+	}
+	volSlug = vol.Slug
+	if volSlug == "" {
+		if createdSlug, lookupErr := volumeSlugByName(testContext(t, time.Minute), volumeSvc, regionSlug, projectSlug, volName); lookupErr != nil {
+			t.Fatalf("volume create returned an empty slug and lookup failed: %v", lookupErr)
+		} else if createdSlug == "" {
+			t.Fatal("creating volume returned an empty slug")
+		} else {
+			volSlug = createdSlug
+		}
 	}
 	t.Logf("  volume create response: slug=%s name=%s", vol.Slug, vol.Name)
 
 	// Volume creation is async — poll until it appears in list
 	t.Log("  waiting for volume to appear in list...")
+	volumeVisible := false
 	for i := 0; i < 12; i++ {
 		time.Sleep(10 * time.Second)
 		vols, err := volumeSvc.List(volCtx, regionSlug, projectSlug)
@@ -582,18 +1122,18 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 			t.Fatalf("listing volumes while waiting: %v", err)
 		}
 		for _, v := range vols {
-			if v.Name == volName || v.Slug == vol.Slug {
-				volSlug = v.Slug
+			if v.Slug == volSlug {
+				volumeVisible = true
 				t.Logf("  volume ready: slug=%s", v.Slug)
 				break
 			}
 		}
-		if volSlug != "" {
+		if volumeVisible {
 			break
 		}
 		t.Log("    still waiting...")
 	}
-	if volSlug == "" {
+	if !volumeVisible {
 		t.Fatal("volume never appeared in list after 2 minutes")
 	}
 
@@ -606,55 +1146,21 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 	}
 	t.Logf("  attached volume %s to instance %s: status=%s message=%s", volSlug, vmSlug, resp.Status, resp.Message)
 
-	// Wait for attachment to settle
-	time.Sleep(15 * time.Second)
-
 	// ── Step 9: List Volumes — Verify Attachment ────────────────────────
 	t.Log("=== Step 9: Verify Volume Attachment ===")
-	time.Sleep(10 * time.Second) // additional settle time for attachment
-	volListCtx := testContext(t, 30*time.Second)
-	vols, err := volumeSvc.List(volListCtx, regionSlug, projectSlug)
-	if err != nil {
-		t.Fatalf("listing volumes: %v", err)
-	}
-	attachedFound := false
-	for _, v := range vols {
-		if v.Slug == volSlug {
-			attachedFound = true
-			t.Logf("  volume %s is attached: type=%s vm_id=%s", v.Slug, v.VolumeType, v.VirtualMachineID)
-			break
-		}
-	}
-	if !attachedFound {
-		t.Logf("  NOTE: volume %s not yet visible in volume list (eventual consistency)", volSlug)
-	}
+	attachmentCtx := testContext(t, 2*time.Minute)
+	waitForVolumeAttached(t, volumeSvc, attachmentCtx, regionSlug, projectSlug, volSlug, vm.ID)
 
 	// ── Step 10: Create Volume Snapshot ──────────────────────────────────
 	t.Log("=== Step 10: Create Volume Snapshot ===")
 	snapCtx := testContext(t, 2*time.Minute)
 
-	// Find the ROOT volume for snapshotting
-	rootVolSlug := ""
-	allVols, err := volumeSvc.List(snapCtx, regionSlug, projectSlug)
-	if err != nil {
-		t.Fatalf("listing volumes for snapshot: %v", err)
-	}
-	for _, v := range allVols {
-		if v.VolumeType == "ROOT" && v.VirtualMachineID != "" {
-			rootVolSlug = v.Slug
-			break
-		}
-	}
-	if rootVolSlug == "" {
-		t.Log("  no ROOT volume found, using data volume for snapshot")
-		rootVolSlug = volSlug
-	}
-
+	// Snapshot only the data volume created by this test. Never infer a root
+	// volume from the account-wide list, which could select another user's VM.
 	snapName := testID() + "-snap"
-	var snapSlug string
-	snap, err := snapshotSvc.Create(snapCtx, rootVolSlug, snapshot.CreateRequest{
+	snap, err := snapshotSvc.Create(snapCtx, volSlug, snapshot.CreateRequest{
 		Name:          snapName,
-		Plan:          storagePlanSlug,
+		Plan:          snapshotPlanSlug,
 		Service:       "VM Snapshot",
 		Project:       projectSlug,
 		CloudProvider: cloudProviderSlug,
@@ -662,12 +1168,28 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 		BillingCycle:  billingCycle,
 	})
 	if err != nil {
+		if createdSlug, lookupErr := snapshotSlugByName(testContext(t, time.Minute), snapshotSvc, regionSlug, projectSlug, snapName); lookupErr != nil {
+			t.Logf("  could not check whether snapshot %q was created: %v", snapName, lookupErr)
+		} else {
+			snapSlug = createdSlug
+		}
 		t.Fatalf("creating snapshot: %v", err)
+	}
+	snapSlug = snap.Slug
+	if snapSlug == "" {
+		if createdSlug, lookupErr := snapshotSlugByName(testContext(t, time.Minute), snapshotSvc, regionSlug, projectSlug, snapName); lookupErr != nil {
+			t.Fatalf("snapshot create returned an empty slug and lookup failed: %v", lookupErr)
+		} else if createdSlug == "" {
+			t.Fatal("creating snapshot returned an empty slug")
+		} else {
+			snapSlug = createdSlug
+		}
 	}
 	t.Logf("  snapshot create response: slug=%s name=%s", snap.Slug, snap.Name)
 
 	// Snapshot creation is async — poll until it appears in list
 	t.Log("  waiting for snapshot to appear...")
+	snapshotVisible := false
 	for i := 0; i < 12; i++ {
 		time.Sleep(10 * time.Second)
 		snaps, err := snapshotSvc.List(snapCtx, regionSlug, projectSlug)
@@ -675,13 +1197,13 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 			t.Fatalf("listing snapshots while waiting: %v", err)
 		}
 		for _, s := range snaps {
-			if s.Name == snapName || s.Slug == snap.Slug {
-				snapSlug = s.Slug
+			if s.Slug == snapSlug {
+				snapshotVisible = true
 				t.Logf("  snapshot ready: slug=%s", s.Slug)
 				break
 			}
 		}
-		if snapSlug != "" {
+		if snapshotVisible {
 			break
 		}
 		t.Log("    still waiting...")
@@ -689,40 +1211,36 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 
 	// ── Step 11: Verify Snapshot in List ─────────────────────────────────
 	t.Log("=== Step 11: Verify Snapshot in List ===")
-	if snapSlug != "" {
+	if snapshotVisible {
 		t.Logf("  snapshot %s confirmed in list", snapSlug)
 	} else {
-		t.Log("  NOTE: snapshot not yet visible in list (async)")
+		t.Fatal("snapshot never appeared in list after 2 minutes")
 	}
 
-	// ── Step 12: Revert Snapshot (no Delete endpoint available) ──────────
-	if snapSlug != "" {
-		t.Log("=== Step 12: Revert Snapshot (best-effort) ===")
-		revertCtx := testContext(t, 60*time.Second)
-		_, err := snapshotSvc.Revert(revertCtx, rootVolSlug, snapSlug)
-		if err != nil {
-			t.Logf("  NOTE: snapshot revert: %v", err)
-		} else {
-			t.Logf("  reverted snapshot %s on volume %s", snapSlug, rootVolSlug)
-		}
-		time.Sleep(5 * time.Second)
-	} else {
-		t.Log("=== Step 12: Skip (no snapshot slug) ===")
+	// ── Step 12: Stop Instance and Revert Snapshot ───────────────────────
+	t.Log("=== Step 12: Stop Instance for Snapshot Revert ===")
+	stopForRevertCtx := testContext(t, 10*time.Minute)
+	if _, err := instanceSvc.Stop(stopForRevertCtx, vmSlug); err != nil {
+		t.Fatalf("stopping instance before reverting snapshot: %v", err)
 	}
+	waitForInstance(t, instanceSvc, stopForRevertCtx, vmSlug, "Stopped", "stopped")
+	t.Log("=== Step 12: Revert Snapshot ===")
+	revertCtx := testContext(t, 60*time.Second)
+	_, err = snapshotSvc.Revert(revertCtx, volSlug, snapSlug)
+	if err != nil {
+		t.Fatalf("reverting snapshot %s: %v", snapSlug, err)
+	}
+	t.Logf("  reverted snapshot %s on volume %s", snapSlug, volSlug)
+	time.Sleep(5 * time.Second)
 
 	// ── Step 13: Delete Tag ──────────────────────────────────────────────
-	if tagCreated {
-		t.Log("=== Step 13: Delete Tag ===")
-		tagDelCtx := testContext(t, 30*time.Second)
-		if err := instanceSvc.DeleteTag(tagDelCtx, vmSlug, "lifecycle-test"); err != nil {
-			t.Logf("  SKIP: tag delete failed: %v", err)
-		} else {
-			t.Logf("  deleted tag lifecycle-test from %s", vmSlug)
-		}
-		tagCreated = false // prevent cleanup double-delete
-	} else {
-		t.Log("=== Step 13: Skip (no tag created) ===")
+	t.Log("=== Step 13: Delete Tag ===")
+	tagDelCtx := testContext(t, 30*time.Second)
+	if err := instanceSvc.DeleteTag(tagDelCtx, vmSlug, "lifecycle-test"); err != nil {
+		t.Fatalf("deleting tag: %v", err)
 	}
+	t.Logf("  deleted tag lifecycle-test from %s", vmSlug)
+	tagCreated = false // prevent cleanup double-delete
 
 	// ── Step 14: Detach Volume ───────────────────────────────────────────
 	t.Log("=== Step 14: Detach Volume ===")
@@ -732,19 +1250,10 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 		t.Fatalf("detaching volume: %v", err)
 	}
 	t.Logf("  detached volume %s", volSlug)
-	time.Sleep(15 * time.Second)
+	waitForVolumeDetached(t, volumeSvc, detachCtx, regionSlug, projectSlug, volSlug)
 
-	// ── Step 15: Stop Instance ───────────────────────────────────────────
-	t.Log("=== Step 15: Stop Instance ===")
-	stopCtx := testContext(t, 10*time.Minute)
-	_, err = instanceSvc.Stop(stopCtx, vmSlug)
-	if err != nil {
-		t.Fatalf("stopping instance: %v", err)
-	}
-	waitForInstance(t, instanceSvc, stopCtx, vmSlug, "Stopped", "stopped")
-
-	// ── Step 16: Start Instance ──────────────────────────────────────────
-	t.Log("=== Step 16: Start Instance ===")
+	// ── Step 15: Start Instance ──────────────────────────────────────────
+	t.Log("=== Step 15: Start Instance ===")
 	startCtx := testContext(t, 10*time.Minute)
 	_, err = instanceSvc.Start(startCtx, vmSlug)
 	if err != nil {
@@ -752,8 +1261,8 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 	}
 	waitForInstance(t, instanceSvc, startCtx, vmSlug, "Running", "running")
 
-	// ── Step 17: Stop Again (for cleanup) ────────────────────────────────
-	t.Log("=== Step 17: Stop Instance (for cleanup) ===")
+	// ── Step 16: Stop Instance (for cleanup) ─────────────────────────────
+	t.Log("=== Step 16: Stop Instance (for cleanup) ===")
 	stop2Ctx := testContext(t, 10*time.Minute)
 	_, err = instanceSvc.Stop(stop2Ctx, vmSlug)
 	if err != nil {
@@ -761,22 +1270,52 @@ func TestPhase3_InstanceLifecycle(t *testing.T) {
 	}
 	waitForInstance(t, instanceSvc, stop2Ctx, vmSlug, "Stopped", "stopped")
 
-	// Note: The STKCNSL API does not have volume.Delete or instance.Destroy
-	// endpoints. Resources created by this test must be cleaned up via the
-	// console or future API endpoints. Mark slugs empty to skip cleanup
-	// re-attempts.
-	t.Log("=== Step 18: Skip volume delete (no API endpoint) ===")
-	t.Logf("  volume %s must be deleted manually", volSlug)
-	volSlug = "" // prevent cleanup from re-trying
+	// ── Step 17: Delete Snapshot ─────────────────────────────────────────
+	t.Log("=== Step 17: Delete Snapshot ===")
+	deleteSnapshotCtx := testContext(t, 5*time.Minute)
+	if err := snapshotSvc.Delete(deleteSnapshotCtx, snapSlug); err != nil {
+		t.Fatalf("deleting snapshot %s: %v", snapSlug, err)
+	}
+	waitForSnapshotAbsent(t, snapshotSvc, deleteSnapshotCtx, regionSlug, projectSlug, snapSlug)
+	t.Logf("  deleted snapshot %s", snapSlug)
+	snapSlug = ""
 
-	t.Log("=== Step 19: Skip instance destroy (no API endpoint) ===")
-	t.Logf("  instance %s must be destroyed manually", vmSlug)
-	vmSlug = "" // prevent cleanup from re-trying
+	// ── Step 18: Delete Data Volume ──────────────────────────────────────
+	t.Log("=== Step 18: Delete Data Volume ===")
+	deleteVolumeCtx := testContext(t, 5*time.Minute)
+	if err := volumeSvc.Delete(deleteVolumeCtx, volSlug); err != nil {
+		t.Fatalf("deleting data volume %s: %v", volSlug, err)
+	}
+	waitForVolumeAbsent(t, volumeSvc, deleteVolumeCtx, regionSlug, projectSlug, volSlug)
+	t.Logf("  deleted data volume %s", volSlug)
+	volSlug = ""
 
-	t.Log("")
-	t.Log("========================================")
-	t.Log("  FULL LIFECYCLE TEST PASSED")
-	t.Log("========================================")
+	// ── Step 19: Cancel Instance ─────────────────────────────────────────
+	t.Log("=== Step 19: Cancel Instance ===")
+	deleteVMCtx := testContext(t, 10*time.Minute)
+	if err := instanceSvc.Delete(deleteVMCtx, vmSlug, false, false); err != nil {
+		t.Fatalf("cancelling instance %s: %v", vmSlug, err)
+	}
+	waitForInstanceAbsent(t, instanceSvc, deleteVMCtx, regionSlug, projectSlug, vmSlug)
+	t.Logf("  cancellation requested for instance %s", vmSlug)
+	vmSlug = ""
+
+	// ── Step 20: Delete Isolated Network ─────────────────────────────────
+	t.Log("=== Step 20: Delete Isolated Network ===")
+	deleteNetworkCtx := testContext(t, 5*time.Minute)
+	if err := networkSvc.Delete(deleteNetworkCtx, networkSlug); err != nil {
+		t.Fatalf("deleting isolated network %s: %v", networkSlug, err)
+	}
+	waitForNetworkAbsent(t, networkSvc, deleteNetworkCtx, regionSlug, projectSlug, networkSlug)
+	t.Logf("  deleted isolated network %s", networkSlug)
+	networkSlug = ""
+
+	if !t.Failed() {
+		t.Log("")
+		t.Log("========================================")
+		t.Log("  FULL LIFECYCLE TEST PASSED")
+		t.Log("========================================")
+	}
 }
 
 // ─── Phase 4: Parallel Read-Only Smoke Tests ────────────────────────────────
