@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVMBackupScheduleCreateSendsPortalContract(t *testing.T) {
@@ -21,7 +22,9 @@ func TestVMBackupScheduleCreateSendsPortalContract(t *testing.T) {
 			return
 		}
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatal(err)
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
 		}
 		fmt.Fprint(w, `{"data":{"id":"policy-1","name":"nightly","slug":"vm-1","interval":"weeklyOn","day":0,"at":"13:00","timezone":"America/Toronto","retention_policy":2,"status":"active"}}`)
 	}))
@@ -61,7 +64,9 @@ func TestVMBackupScheduleHourlyDefaultsTime(t *testing.T) {
 			return
 		}
 		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatal(err)
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
 		}
 		fmt.Fprint(w, `{"data":{"id":"policy-1"}}`)
 	}))
@@ -242,6 +247,28 @@ func TestVMBackupScheduleCreateDoesNotRetryAfterServerFailure(t *testing.T) {
 	_, _, err := execCmd(t, NewVMBackupCmd(), "schedule", "create", "vm-1", "--name", "x", "--interval", "dailyAt", "--at", "13:00", "--timezone", "UTC", "--retention", "1", "--api-url", s.URL)
 	if err == nil || posts != 1 || !strings.Contains(err.Error(), "schedule list") {
 		t.Fatalf("err=%v posts=%d", err, posts)
+	}
+}
+
+func TestVMBackupScheduleCreateGetsFreshTimeoutAfterVMInventory(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines":
+			time.Sleep(600 * time.Millisecond)
+			fmt.Fprint(w, `{"status":"Success","current_page":1,"last_page":1,"data":[{"slug":"vm-1"}]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/scheduler-actions":
+			time.Sleep(600 * time.Millisecond)
+			fmt.Fprint(w, `{"data":{"id":"policy-1"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer s.Close()
+	t.Setenv("ZCP_BEARER_TOKEN", "test")
+
+	_, _, err := execCmd(t, NewVMBackupCmd(), "schedule", "create", "vm-1", "--interval", "dailyAt", "--at", "13:00", "--timezone", "UTC", "--retention", "1", "--timeout", "1", "--api-url", s.URL)
+	if err != nil {
+		t.Fatalf("vm-backup schedule create: %v", err)
 	}
 }
 

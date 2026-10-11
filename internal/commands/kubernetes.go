@@ -80,7 +80,7 @@ func runK8sClusterList(cmd *cobra.Command) error {
 			c.Version,
 			strconv.Itoa(k8sWorkerNodeCount(c)),
 			strconv.Itoa(c.ControlNodes),
-			strconv.FormatBool(c.EnableHA),
+			k8sHAStatus(c),
 			regionName,
 			c.CreatedAt,
 		})
@@ -160,7 +160,7 @@ func runK8sClusterGet(cmd *cobra.Command, slug string) error {
 		{"Version", version},
 		{"Workers", workers},
 		{"Control Nodes", controlNodes},
-		{"HA", strconv.FormatBool(c.EnableHA)},
+		{"HA", k8sHAStatus(*c)},
 		{"Public IP", publicIP},
 		{"Private IP", privateIP},
 		{"Endpoint", endpoint},
@@ -414,7 +414,7 @@ func newK8sClusterCreateCmd() *cobra.Command {
 				return fmt.Errorf("--storage-plan must name a storage tier; custom_plan is not supported")
 			}
 			if !cmd.Flags().Changed("root-disk-size") {
-				return fmt.Errorf("--root-disk-size is required when --storage-plan is set")
+				return fmt.Errorf("--root-disk-size is required")
 			}
 			if rootDiskSize <= 0 {
 				return fmt.Errorf("--root-disk-size must be > 0")
@@ -530,9 +530,16 @@ func runK8sClusterCreate(cmd *cobra.Command, req kubernetes.CreateRequest) error
 		cluster.Version,
 		strconv.Itoa(k8sWorkerNodeCount(*cluster)),
 		strconv.Itoa(cluster.ControlNodes),
-		strconv.FormatBool(cluster.EnableHA),
+		k8sHAStatus(*cluster),
 	}}
 	return printer.PrintTable(headers, rows)
+}
+
+func k8sHAStatus(c kubernetes.Cluster) string {
+	if !c.EnableHAKnown {
+		return "-"
+	}
+	return strconv.FormatBool(c.EnableHA)
 }
 
 func newK8sClusterStartCmd() *cobra.Command {
@@ -835,7 +842,12 @@ func newK8sClusterDeleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <slug>",
 		Short: "Permanently delete a Kubernetes cluster",
-		Args:  exactArgs(1),
+		Long: `Permanently delete a Kubernetes cluster.
+
+Deletion is refused while the cluster is Starting, Destroying, or its current
+state cannot be verified. Wait for the lifecycle operation to finish, then
+retry the command.`,
+		Args: exactArgs(1),
 		Example: `  zcp kubernetes delete my-cluster
   zcp kubernetes delete my-cluster --yes`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -874,6 +886,9 @@ func runK8sClusterDelete(cmd *cobra.Command, slug string) error {
 		}
 		return fmt.Errorf("kubernetes delete: %w", err)
 	}
+	if err := validateK8sDeleteState(cluster); err != nil {
+		return err
+	}
 
 	deletePublicIP := true
 	req := billing.CancelServiceRequest{
@@ -893,6 +908,30 @@ func runK8sClusterDelete(cmd *cobra.Command, slug string) error {
 	}
 
 	printer.Fprintf("Deletion requested for %q; the Kubernetes cluster is being removed in the background.\n", cluster.Slug)
+	return nil
+}
+
+// validateK8sDeleteState follows the portal's lifecycle controls. Prefer the
+// platform-reconciled meta state because the top-level state can lag while a
+// cluster is provisioning or failing.
+func validateK8sDeleteState(cluster *kubernetes.Cluster) error {
+	state := ""
+	if cluster != nil && cluster.Meta != nil {
+		state = strings.TrimSpace(cluster.Meta.State)
+	}
+	if state == "" && cluster != nil {
+		state = strings.TrimSpace(cluster.State)
+	}
+	if state == "" {
+		return fmt.Errorf("cannot delete Kubernetes cluster %q because its current state is unknown; run 'zcp kubernetes get %s' and retry when the state is available", cluster.Slug, cluster.Slug)
+	}
+
+	switch strings.ToLower(state) {
+	case "starting":
+		return fmt.Errorf("cannot delete Kubernetes cluster %q while it is Starting; wait until provisioning finishes or the cluster reaches Error, then retry", cluster.Slug)
+	case "destroying":
+		return fmt.Errorf("cannot delete Kubernetes cluster %q while it is Destroying; wait for removal to finish", cluster.Slug)
+	}
 	return nil
 }
 

@@ -133,6 +133,31 @@ func TestKubernetesListClustersEmpty(t *testing.T) {
 	}
 }
 
+func TestClusterEnableHAKnown(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantKnown bool
+		wantHA    bool
+	}{
+		{name: "enabled", body: `{"enable_ha":true}`, wantKnown: true, wantHA: true},
+		{name: "disabled", body: `{"enable_ha":false}`, wantKnown: true, wantHA: false},
+		{name: "omitted", body: `{}`, wantKnown: false, wantHA: false},
+		{name: "null", body: `{"enable_ha":null}`, wantKnown: false, wantHA: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cluster kubernetes.Cluster
+			if err := json.Unmarshal([]byte(tt.body), &cluster); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if cluster.EnableHAKnown != tt.wantKnown || cluster.EnableHA != tt.wantHA {
+				t.Errorf("EnableHAKnown=%v EnableHA=%v, want %v/%v", cluster.EnableHAKnown, cluster.EnableHA, tt.wantKnown, tt.wantHA)
+			}
+		})
+	}
+}
+
 func TestKubernetesCreate(t *testing.T) {
 	var gotBody map[string]interface{}
 

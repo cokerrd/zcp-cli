@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -433,6 +434,31 @@ func TestCancelService(t *testing.T) {
 	}
 	if gotPath != "/billing/service-cancel-requests/my-subscription-slug" {
 		t.Errorf("path = %q, want %q", gotPath, "/billing/service-cancel-requests/my-subscription-slug")
+	}
+}
+
+func TestCancelServiceRejectsErrorEnvelope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":  "Error",
+			"message": "service cannot be cancelled while it is starting",
+			"data":    nil,
+		})
+	}))
+	defer srv.Close()
+
+	svc := billing.NewService(newClient(srv.URL))
+	err := svc.CancelService(context.Background(), "my-subscription-slug", billing.CancelServiceRequest{
+		ServiceName: "Virtual Machine",
+		Reason:      "not_needed_anymore",
+		Type:        "Immediate",
+	})
+	if err == nil {
+		t.Fatal("CancelService() error = nil, want API error")
+	}
+	if !strings.Contains(err.Error(), "service cannot be cancelled while it is starting") {
+		t.Errorf("CancelService() error = %q, want API message", err)
 	}
 }
 

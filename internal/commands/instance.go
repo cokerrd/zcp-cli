@@ -654,6 +654,20 @@ func runInstanceStart(cmd *cobra.Command, slug string, wait bool) error {
 	return printer.PrintTable(headers, rows)
 }
 
+// validateInstanceDeleteState uses the state returned by the live meta endpoint.
+// The portal disables deletion while a VM is starting; sending cancellation in
+// that window is rejected by the API.
+func validateInstanceDeleteState(slug, state string) error {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return fmt.Errorf("cannot delete instance %q because its current state is unknown; retry when the current state is available", slug)
+	}
+	if strings.EqualFold(state, "Starting") {
+		return fmt.Errorf("cannot delete instance %q while it is Starting; wait until it finishes starting, then retry", slug)
+	}
+	return nil
+}
+
 // ---------- stop ----------
 
 func newInstanceStopCmd() *cobra.Command {
@@ -1433,9 +1447,9 @@ uses — so the VM's auto-assigned public IP is released along with the VM (unle
 successful response means the request was accepted, not that the VM is already
 gone. Poll with 'zcp instance get <slug>' to confirm removal.
 
-The VM must be in a destroyable state; a VM that is mid-transition (e.g.
-Starting/Stopping) is rejected until it settles. Manually-acquired and source-NAT
-IPs are never touched by this command — release those with 'zcp ip release'.`,
+Deletion is refused while the VM is Starting or its current state cannot be
+verified. Manually-acquired and source-NAT IPs are never touched by this command.
+Release those with 'zcp ip release'.`,
 		Args: exactArgs(1),
 		Example: `  zcp instance delete my-vm
   zcp instance delete my-vm --yes
@@ -1495,6 +1509,13 @@ func runInstanceDelete(cmd *cobra.Command, slug string, deletePublicIP bool, bil
 			fmt.Fprintf(os.Stderr, "Instance %q not found — already deleted.\n", slug)
 			return nil
 		}
+		return err
+	}
+	meta, err := svc.Meta(ctx, vm.Slug)
+	if err != nil {
+		return fmt.Errorf("instance delete: could not determine the current state for %q: %w", vm.Slug, err)
+	}
+	if err := validateInstanceDeleteState(vm.Slug, meta.State); err != nil {
 		return err
 	}
 

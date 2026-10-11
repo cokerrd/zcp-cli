@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -60,28 +61,46 @@ func TestListReturnsNoPartialResultsWhenLaterPageFails(t *testing.T) {
 	}
 }
 
-func TestMutationsUseSchedulerRoutes(t *testing.T) {
-	paths := make([]string, 0, 4)
+func TestIDOperationsEscapeSchedulerRoutes(t *testing.T) {
+	paths := make([]string, 0, 6)
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		paths = append(paths, r.Method+" "+r.URL.Path)
+		paths = append(paths, r.Method+" "+r.URL.EscapedPath())
+		if r.URL.RawQuery != "" {
+			t.Errorf("raw query = %q, want empty", r.URL.RawQuery)
+		}
 		fmt.Fprint(w, `{"data":{"id":"policy"}}`)
 	}))
 	defer s.Close()
 	svc := testService(s)
 	ctx := context.Background()
-	if _, err := svc.Update(ctx, "policy", UpdateRequest{Interval: "dailyAt", At: "01:00", Timezone: "UTC", RetentionPolicy: 1}); err != nil {
+	id := "policy/child?unexpected=query"
+	escapedID := url.PathEscape(id)
+	if _, err := svc.Get(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Pause(ctx, "policy"); err != nil {
+	if _, err := svc.Update(ctx, id, UpdateRequest{Interval: "dailyAt", At: "01:00", Timezone: "UTC", RetentionPolicy: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Resume(ctx, "policy"); err != nil {
+	if _, err := svc.Delete(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.RunNow(ctx, "policy"); err != nil {
+	if _, err := svc.Pause(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"PUT /scheduler-actions/policy", "PATCH /scheduler-actions/policy/pause", "PATCH /scheduler-actions/policy/resume", "POST /scheduler/policy/run-now"}
+	if _, err := svc.Resume(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RunNow(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"GET /scheduler-actions/" + escapedID,
+		"PUT /scheduler-actions/" + escapedID,
+		"DELETE /scheduler-actions/" + escapedID,
+		"PATCH /scheduler-actions/" + escapedID + "/pause",
+		"PATCH /scheduler-actions/" + escapedID + "/resume",
+		"POST /scheduler/" + escapedID + "/run-now",
+	}
 	if len(paths) != len(want) {
 		t.Fatalf("request count = %d, want %d", len(paths), len(want))
 	}

@@ -180,7 +180,6 @@ fx_ip() {
 fx_vm() {
   [[ -n "$FX_VM" ]] && return 0
   local name out root_disk_size; name="$(rname vm)"; root_disk_size="$(det_root_disk_size)"
-  [[ -z "$root_disk_size" ]] && { echo "[fx_vm] set ZCP_SMOKE_ROOT_DISK_SIZE to create a root disk"; return 1; }
   capture out -- zcp instance create --name "$name" \
     --cloud-provider "$(det_cp)" --project "$(det_project)" --region "$(det_region)" \
     --template "$(det_template)" --plan "$(det_vm_plan)" \
@@ -550,7 +549,7 @@ lc_kubernetes() {
   storage_plan="$(jq -r '.data[]|.slug' <<<"$storage_plans" | head -1)"
   setup="$(api_get '/regions' | jq -r --arg s "$(det_region)" '.data[]|select(.slug==$s)|.cloud_provider_setup.slug' | head -1)"
   root_disk_size="$(det_root_disk_size)"
-  [[ -z "$ver" || -z "$master_plan" || -z "$worker_plan" || -z "$storage_plan" || -z "$storage_category" || -z "$root_disk_size" ]] && { _mark_skip "kubernetes (no compatible control-plane, worker, storage plans, and root disk capacity for region)"; return; }
+  [[ -z "$ver" || -z "$master_plan" || -z "$worker_plan" || -z "$storage_plan" || -z "$storage_category" ]] && { _mark_skip "kubernetes (no compatible control-plane, worker, and storage plans for region)"; return; }
   name="$(rname k8s)"
   out="$(zcp kubernetes create --name "$name" --version "$ver" \
     --control-plane-plan "$master_plan" --worker-plan "$worker_plan" --storage-plan "$storage_plan" --root-disk-size "$root_disk_size" --storage-category "$storage_category" \

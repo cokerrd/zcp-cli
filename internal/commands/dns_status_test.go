@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -84,13 +85,23 @@ func TestDNSShowLeavesStatusUnknownWhenListHasNoMatchingSlug(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("ZCP_BEARER_TOKEN", "test-token")
 
-	out, _, err := execCmd(t, NewDNSCmd(), "show", "example-com-1", "--api-url", srv.URL)
+	out, _, err := execCmd(t, NewDNSCmd(), "show", "example-com-1", "--api-url", srv.URL, "--output", "json")
 	if err != nil {
 		t.Fatalf("dns show error = %v", err)
 	}
-	if !strings.Contains(out, "-") || strings.Contains(out, "true") {
-		t.Errorf("dns show output = %q, want unknown status marker without a fabricated value", out)
+	var rows []map[string]string
+	if err := json.Unmarshal([]byte(out), &rows); err != nil {
+		t.Fatalf("dns show JSON output = %q: %v", out, err)
 	}
+	for _, row := range rows {
+		if row["field"] == "Status" {
+			if row["value"] != "-" {
+				t.Errorf("status value = %q, want unknown marker '-'", row["value"])
+			}
+			return
+		}
+	}
+	t.Errorf("dns show rows = %#v, missing Status row", rows)
 }
 
 func TestDNSShowReturnsListLookupErrorRatherThanFabricatingStatus(t *testing.T) {

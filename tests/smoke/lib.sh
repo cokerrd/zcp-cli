@@ -235,7 +235,7 @@ det_vm_plan() {
 det_blockstorage_plan() {
   if [[ -n "${ZCP_SMOKE_BLOCKSTORAGE_PLAN:-}" ]]; then printf '%s' "$ZCP_SMOKE_BLOCKSTORAGE_PLAN"; return; fi
   api_get "/plans/service/Block%20Storage?filter%5Bregion%5D=$(det_region)&filter%5Bstorage_category%5D=$(det_storage_cat)" \
-    | jq -r '.data[0].slug // empty' | head -1
+    | jq -r '.data[0].slug // empty'
 }
 # The smoke suite uses 100 GB only as its disposable fixture capacity. It is
 # not a CLI default; instance and Kubernetes create always require the flag.

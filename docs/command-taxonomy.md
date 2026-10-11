@@ -401,6 +401,7 @@ zcp
 ├── vm-backup                          VM backup operations
 │   ├── list                           List VM backups
 │   ├── create                         Create a VM backup (--interval dailyAt|hourlyAt)
+│   ├── restore <vm-slug> <backup-slug> Restore a stopped VM from a ready backup (--yes to skip prompt)
 │   ├── delete                         Delete a VM backup by submitting a service-cancellation request (--yes to skip prompt)
 │   └── schedule                        Scheduler-backed VM backup policies
 │       ├── list                        List policies

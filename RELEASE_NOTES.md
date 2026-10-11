@@ -42,6 +42,12 @@ autoscaling with an explicit `--workers` count.
 `zcp kubernetes delete` submits an immediate cancellation request. A successful
 response confirms that the request was accepted; removal completes in the
 background.
+A response whose API status is not `Success`, including an HTTP 200 response,
+is reported as an error instead of as an accepted cancellation request.
+Deletion is refused while the cluster is Starting, Destroying, or its current
+state cannot be verified. Failed clusters remain eligible for cleanup.
+`zcp instance delete` also refuses deletion while a VM is Starting or its live
+state cannot be verified.
 
 Use `--enable-csi` to request Cloud Storage Integration for a supported
 cluster. Creating a high-availability cluster requires at least two control
@@ -65,13 +71,23 @@ zcp vm-backup schedule run-now <id>
 ```
 
 Policies support get, update, pause, resume, run-now, and delete operations.
-Deleting a policy leaves backups it has already created in place.
+Delete all backups or snapshots created by a policy before deleting it. Pause the
+policy to retain those resources without scheduling more.
 Policy output includes the last-run result and any reported error; an active
 policy does not by itself confirm a completed backup.
 
 The current platform rejects `everyOtherDay` after persisting a
 policy. If it returns an error, list policies before retrying and remove any
 unintended policy.
+
+## VM backup restore
+
+`zcp vm-backup restore <vm-slug> <backup-slug> --yes` restores a stopped VM
+from a ready backup. It verifies the selected VM, backup ownership, region, and
+project before sending the request. Restoring overwrites the VM's current disks.
+Stop the VM with `zcp instance stop <vm-slug> --wait` first. A successful
+response only confirms the request was accepted. Wait for the VM to leave
+`Restoring`, then use `zcp instance logs <vm-slug>` to check for failures.
 
 ## VM backup create output
 

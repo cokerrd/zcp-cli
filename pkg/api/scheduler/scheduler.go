@@ -185,7 +185,7 @@ func (s *Service) List(ctx context.Context, region, project string) ([]Policy, e
 
 func (s *Service) Get(ctx context.Context, id string) (*Policy, error) {
 	var r envelope
-	if err := s.client.Get(ctx, "/scheduler-actions/"+id, nil, &r); err != nil {
+	if err := s.client.Get(ctx, "/scheduler-actions/"+url.PathEscape(id), nil, &r); err != nil {
 		return nil, fmt.Errorf("getting scheduler action %s: %w", id, err)
 	}
 	return &r.Data, nil
@@ -199,35 +199,35 @@ func (s *Service) Create(ctx context.Context, req CreateRequest) (*Policy, error
 }
 func (s *Service) Update(ctx context.Context, id string, req UpdateRequest) (*Policy, error) {
 	var r envelope
-	if err := s.client.Put(ctx, "/scheduler-actions/"+id, nil, req, &r); err != nil {
+	if err := s.client.Put(ctx, "/scheduler-actions/"+url.PathEscape(id), nil, req, &r); err != nil {
 		return nil, fmt.Errorf("updating scheduler action %s: %w", id, err)
 	}
 	return &r.Data, nil
 }
 func (s *Service) Delete(ctx context.Context, id string) (*ActionResponse, error) {
 	var r ActionResponse
-	if err := s.client.DeleteWithResult(ctx, "/scheduler-actions/"+id, nil, &r); err != nil {
+	if err := s.client.DeleteWithResult(ctx, "/scheduler-actions/"+url.PathEscape(id), nil, &r); err != nil {
 		return nil, fmt.Errorf("deleting scheduler action %s: %w", id, err)
 	}
 	return &r, nil
 }
 func (s *Service) Pause(ctx context.Context, id string) (*Policy, error) {
 	var r envelope
-	if err := s.client.Patch(ctx, "/scheduler-actions/"+id+"/pause", nil, &r); err != nil {
+	if err := s.client.Patch(ctx, "/scheduler-actions/"+url.PathEscape(id)+"/pause", nil, &r); err != nil {
 		return nil, fmt.Errorf("pausing scheduler action %s: %w", id, err)
 	}
 	return &r.Data, nil
 }
 func (s *Service) Resume(ctx context.Context, id string) (*Policy, error) {
 	var r envelope
-	if err := s.client.Patch(ctx, "/scheduler-actions/"+id+"/resume", nil, &r); err != nil {
+	if err := s.client.Patch(ctx, "/scheduler-actions/"+url.PathEscape(id)+"/resume", nil, &r); err != nil {
 		return nil, fmt.Errorf("resuming scheduler action %s: %w", id, err)
 	}
 	return &r.Data, nil
 }
 func (s *Service) RunNow(ctx context.Context, id string) (*ActionResponse, error) {
 	var r ActionResponse
-	if err := s.client.Post(ctx, "/scheduler/"+id+"/run-now", nil, &r); err != nil {
+	if err := s.client.Post(ctx, "/scheduler/"+url.PathEscape(id)+"/run-now", nil, &r); err != nil {
 		return nil, fmt.Errorf("running scheduler action %s: %w", id, err)
 	}
 	return &r, nil

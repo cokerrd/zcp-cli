@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -235,6 +236,93 @@ func TestK8sGetShowsSafeResourceOverview(t *testing.T) {
 	}
 }
 
+func TestK8sOutputShowsUnknownHAWhenOmitted(t *testing.T) {
+	t.Setenv("ZCP_BEARER_TOKEN", "test-token")
+	cluster := `{"slug":"cluster-1","name":"cluster-1","state":"Running","version":"v1.37.0","node_size":1,"worker_node_size":1,"control_nodes":3}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/kubernetes-clusters":
+			fmt.Fprintf(w, `{"status":"Success","data":[%s]}`, cluster)
+		case r.Method == http.MethodGet && r.URL.Path == "/kubernetes-clusters/cluster-1":
+			fmt.Fprintf(w, `{"status":"Success","data":%s}`, cluster)
+		case r.Method == http.MethodPost && r.URL.Path == "/kubernetes-clusters":
+			fmt.Fprintf(w, `{"status":"Success","data":%s}`, cluster)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	listOut, _, err := execCmd(t, NewKubernetesCmd(), "list", "--api-url", srv.URL, "--output", "json")
+	if err != nil {
+		t.Fatalf("kubernetes list: %v", err)
+	}
+	var listRows []map[string]string
+	if err := json.Unmarshal([]byte(listOut), &listRows); err != nil {
+		t.Fatalf("kubernetes list JSON = %q: %v", listOut, err)
+	}
+	if len(listRows) != 1 || listRows[0]["ha"] != "-" {
+		t.Errorf("kubernetes list HA = %#v, want '-'", listRows)
+	}
+
+	getOut, _, err := execCmd(t, NewKubernetesCmd(), "get", "cluster-1", "--api-url", srv.URL, "--output", "json")
+	if err != nil {
+		t.Fatalf("kubernetes get: %v", err)
+	}
+	var getRows []map[string]string
+	if err := json.Unmarshal([]byte(getOut), &getRows); err != nil {
+		t.Fatalf("kubernetes get JSON = %q: %v", getOut, err)
+	}
+	foundHA := false
+	for _, row := range getRows {
+		if row["field"] == "HA" {
+			foundHA = true
+			if row["value"] != "-" {
+				t.Errorf("kubernetes get HA = %q, want '-'", row["value"])
+			}
+			break
+		}
+	}
+	if !foundHA {
+		t.Errorf("kubernetes get rows = %#v, missing HA", getRows)
+	}
+
+	createOut, _, err := execCmd(t, NewKubernetesCmd(), "create",
+		"--name", "cluster-1", "--version", "v1.37.0",
+		"--control-plane-plan", "control", "--worker-plan", "worker", "--storage-plan", "storage", "--root-disk-size", "100", "--storage-category", "pro-nvme",
+		"--cloud-provider", "nimbo", "--region", "yul-1", "--project", "test", "--billing-cycle", "hourly", "--workers", "1", "--ssh-key", "key",
+		"--api-url", srv.URL, "--output", "json")
+	if err != nil {
+		t.Fatalf("kubernetes create: %v", err)
+	}
+	var createRows []map[string]string
+	if err := json.Unmarshal([]byte(createOut), &createRows); err != nil {
+		t.Fatalf("kubernetes create JSON = %q: %v", createOut, err)
+	}
+	if len(createRows) != 1 || createRows[0]["ha"] != "-" {
+		t.Errorf("kubernetes create HA = %#v, want '-'", createRows)
+	}
+}
+
+func TestK8sHAStatusPreservesExplicitValues(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		c    kubernetes.Cluster
+		want string
+	}{
+		{name: "unknown", c: kubernetes.Cluster{ControlNodes: 3}, want: "-"},
+		{name: "disabled", c: kubernetes.Cluster{EnableHAKnown: true}, want: "false"},
+		{name: "enabled", c: kubernetes.Cluster{EnableHAKnown: true, EnableHA: true}, want: "true"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := k8sHAStatus(tt.c); got != tt.want {
+				t.Errorf("k8sHAStatus(%+v) = %q, want %q", tt.c, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestK8sDeleteSubmitsServiceCancellation(t *testing.T) {
 	t.Setenv("ZCP_BEARER_TOKEN", "test-token")
 	var getCount, postCount, deleteCount int
@@ -243,7 +331,7 @@ func TestK8sDeleteSubmitsServiceCancellation(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/kubernetes-clusters/cluster-1":
 			getCount++
-			_, _ = w.Write([]byte(`{"status":"Success","data":{"slug":"cluster-1","offering":{"billing_cycle":{"unit":"hour","slug":"monthly","name":"Monthly"}}}}`))
+			_, _ = w.Write([]byte(`{"status":"Success","data":{"slug":"cluster-1","state":"Starting","meta":{"state":"Running"},"offering":{"billing_cycle":{"unit":"hour","slug":"monthly","name":"Monthly"}}}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/billing/service-cancel-requests/cluster-1":
 			postCount++
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -290,7 +378,7 @@ func TestK8sDeleteOmitsUnknownBillingCycle(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/kubernetes-clusters/cluster-1":
-			_, _ = w.Write([]byte(`{"status":"Success","data":{"slug":"cluster-1"}}`))
+			_, _ = w.Write([]byte(`{"status":"Success","data":{"slug":"cluster-1","state":"Running"}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/billing/service-cancel-requests/cluster-1":
 			postCount++
 			_ = json.NewDecoder(r.Body).Decode(&request)
@@ -364,6 +452,67 @@ func TestK8sDeleteNotFoundIsIdempotent(t *testing.T) {
 	}
 	if postCount != 0 || deleteCount != 0 {
 		t.Errorf("requests POST=%d DELETE=%d, want 0, 0", postCount, deleteCount)
+	}
+}
+
+func TestK8sDeleteRejectsUnavailableStates(t *testing.T) {
+	t.Setenv("ZCP_BEARER_TOKEN", "test-token")
+	for _, tt := range []struct {
+		name  string
+		state string
+		want  string
+	}{
+		{name: "starting", state: "Starting", want: "while it is Starting"},
+		{name: "destroying", state: "Destroying", want: "while it is Destroying"},
+		{name: "unknown", state: "", want: "current state is unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var postCount int
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/kubernetes-clusters/cluster-1":
+					fmt.Fprintf(w, `{"status":"Success","data":{"slug":"cluster-1","state":%q}}`, tt.state)
+				case r.Method == http.MethodPost:
+					postCount++
+					http.Error(w, "cancellation must not be submitted", http.StatusInternalServerError)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			_, _, err := execCmd(t, NewKubernetesCmd(), "delete", "cluster-1", "--yes", "--api-url", srv.URL)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("delete error = %v, want %q", err, tt.want)
+			}
+			if postCount != 0 {
+				t.Errorf("cancellation requests = %d, want 0", postCount)
+			}
+		})
+	}
+}
+
+func TestK8sDeleteAllowsErrorState(t *testing.T) {
+	t.Setenv("ZCP_BEARER_TOKEN", "test-token")
+	var postCount int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/kubernetes-clusters/cluster-1":
+			fmt.Fprint(w, `{"status":"Success","data":{"slug":"cluster-1","state":"Error"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/billing/service-cancel-requests/cluster-1":
+			postCount++
+			fmt.Fprint(w, `{"status":"Success"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	if _, _, err := execCmd(t, NewKubernetesCmd(), "delete", "cluster-1", "--yes", "--api-url", srv.URL); err != nil {
+		t.Fatalf("delete Error-state cluster: %v", err)
+	}
+	if postCount != 1 {
+		t.Errorf("cancellation requests = %d, want 1", postCount)
 	}
 }
 

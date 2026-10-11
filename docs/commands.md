@@ -185,9 +185,9 @@ zcp instance delete <slug> --delete-public-ip=false   # keep the VM's auto-assig
 `delete` submits an immediate service-cancellation request (the same workflow the
 CMP Web UI uses), so the VM's auto-assigned public IP is released along with the VM.
 Deletion is asynchronous — a successful response means the request was accepted, not
-that the VM is already gone; poll `zcp instance get <slug>` to confirm. The VM must be
-in a destroyable state (a VM mid-transition such as Starting/Stopping is rejected until
-it settles).
+that the VM is already gone; poll `zcp instance get <slug>` to confirm. Deletion is
+refused while the VM is Starting or its current state cannot be verified. Wait until
+the current state is available, then retry.
 
 The `--wait` flag on `create`, `start`, and `stop` polls the API until the instance
 reaches the target state, printing progress to stderr.
@@ -462,6 +462,8 @@ zcp vm-backup create <vm-slug> --interval dailyAt --plan backup-yul \
 zcp vm-backup create <vm-slug> --interval dailyAt --plan backup-yul \
   --pseudo-service vm-backup --billing-cycle hourly --region yul-1 --project default-9 --output json
 zcp vm-backup delete <slug>
+zcp instance stop <vm-slug> --wait
+zcp vm-backup restore <vm-slug> <backup-slug> --yes
 
 # Scheduler-backed VM backup policies. These use an IANA timezone and retain a
 # specified number of backups. `--at` accepts whole hours as `HH:00`. For weeklyOn use Sunday=0 through Saturday=6;
@@ -481,7 +483,9 @@ zcp vm-backup schedule delete <id> --yes
 
 `vm-backup delete` submits a service-cancellation request, the same workflow `instance delete` uses, since the VM backup API route does not support direct deletion.
 
-`vm-backup schedule` manages the current scheduler-backed policies. `--immediate` requests one backup when the policy is created. `run-now` requests another backup without waiting for the next scheduled time. Pausing retains existing backups, and deleting a policy does not delete backups it already created.
+`vm-backup restore` overwrites the VM's current disks. It only accepts a stopped VM and a ready backup that belongs to that VM in the selected region and project. Stop the VM with `zcp instance stop <vm-slug> --wait` first. A successful restore response only confirms the request was accepted. Wait for the VM to leave `Restoring`, then use `zcp instance logs <vm-slug>` to check for failures.
+
+`vm-backup schedule` manages the current scheduler-backed policies. `--immediate` requests one backup when the policy is created. `run-now` requests another backup without waiting for the next scheduled time. Delete all backups or snapshots created by a policy before deleting it. Pause the policy to retain those resources without scheduling more.
 
 Use `zcp vm-backup schedule get <id>` to read the policy's last-run status and any reported error. A policy marked active does not by itself confirm that its last backup completed.
 

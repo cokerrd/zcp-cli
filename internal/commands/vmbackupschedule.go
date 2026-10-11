@@ -199,14 +199,16 @@ func newVMBackupScheduleCreateCmd() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		svc, ctx, cancel, err := schedulerService(cmd)
+		svc, inventoryCtx, inventoryCancel, err := schedulerService(cmd)
 		if err != nil {
 			return err
 		}
-		defer cancel()
-		if err := scopedVM(cmd, ctx, args[0]); err != nil {
+		defer inventoryCancel()
+		if err := scopedVM(cmd, inventoryCtx, args[0]); err != nil {
 			return err
 		}
+		createCtx, createCancel := context.WithTimeout(context.Background(), time.Duration(getTimeout(cmd))*time.Second)
+		defer createCancel()
 		i := 0
 		if immediate {
 			i = 1
@@ -218,7 +220,7 @@ func newVMBackupScheduleCreateCmd() *cobra.Command {
 		if v := strings.TrimSpace(description); v != "" {
 			descriptionValue = &v
 		}
-		p, err := svc.Create(ctx, scheduler.CreateRequest{Service: "Virtual Machine", Slug: args[0], Action: "VM Backup", Name: nameValue, Description: descriptionValue, Interval: interval, Day: d, At: at, Timezone: tz, RetentionPolicy: retention, TakeOneImmediately: i, Config: scheduler.Config{TakeOneImmediately: i}})
+		p, err := svc.Create(createCtx, scheduler.CreateRequest{Service: "Virtual Machine", Slug: args[0], Action: "VM Backup", Name: nameValue, Description: descriptionValue, Interval: interval, Day: d, At: at, Timezone: tz, RetentionPolicy: retention, TakeOneImmediately: i, Config: scheduler.Config{TakeOneImmediately: i}})
 		if err != nil {
 			return fmt.Errorf("vm-backup schedule create: the API may have accepted the request before returning an error (%w). Run 'zcp vm-backup schedule list' before retrying", err)
 		}

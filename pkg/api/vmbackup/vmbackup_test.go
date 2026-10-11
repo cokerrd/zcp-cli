@@ -168,6 +168,57 @@ func TestVMBackupDelete_Error(t *testing.T) {
 	}
 }
 
+func TestVMBackupListSnapshotsAndRestore(t *testing.T) {
+	var restorePath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			if r.URL.Path != "/virtual-machines/backups/snapshots" {
+				http.NotFound(w, r)
+				return
+			}
+			if got := r.URL.Query().Get("include"); got != "region,project,virtual_machine" {
+				http.Error(w, "missing restore relations", http.StatusBadRequest)
+				return
+			}
+			fmt.Fprint(w, `{"status":"Success","current_page":1,"last_page":1,"data":[{"slug":"backup-1","is_valid_for_restore":true,"virtual_machine":{"slug":"vm-1"},"region":{"slug":"yul-1"},"project":{"slug":"default"}}]}`)
+		case http.MethodPost:
+			restorePath = r.URL.EscapedPath()
+			fmt.Fprint(w, `{"status":"Success","message":"Ok"}`)
+		default:
+			http.Error(w, "want GET or POST", http.StatusMethodNotAllowed)
+		}
+	}))
+	defer srv.Close()
+
+	svc := vmbackup.NewService(newTestClient(t, srv))
+	snapshots, err := svc.ListSnapshots(context.Background(), "yul-1", "default")
+	if err != nil {
+		t.Fatalf("ListSnapshots() error = %v", err)
+	}
+	if len(snapshots) != 1 || snapshots[0].VirtualMachine == nil || snapshots[0].VirtualMachine.Slug != "vm-1" || snapshots[0].IsValidForRestore == nil || !*snapshots[0].IsValidForRestore {
+		t.Fatalf("snapshots = %#v, want ready snapshot for vm-1", snapshots)
+	}
+	if _, err := svc.Restore(context.Background(), "vm/a", "backup?b"); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+	if restorePath != "/virtual-machines/vm%2Fa/backups/snapshots/restore/backup%3Fb" {
+		t.Errorf("restore escaped path = %q", restorePath)
+	}
+}
+
+func TestVMBackupRestoreRejectsErrorEnvelope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"status":"Error","message":"VM must be stopped"}`)
+	}))
+	defer srv.Close()
+
+	_, err := vmbackup.NewService(newTestClient(t, srv)).Restore(context.Background(), "vm-1", "backup-1")
+	if err == nil || !strings.Contains(err.Error(), "VM must be stopped") {
+		t.Fatalf("Restore() error = %v, want response message", err)
+	}
+}
+
 func TestVMBackupListPagination(t *testing.T) {
 	page1 := `{"status":"Success","message":"Ok","current_page":1,"last_page":2,"total":2,
 		"data":[{"id":"vmb-1","name":"a","slug":"vmb-a"}]}`

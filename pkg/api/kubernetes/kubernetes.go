@@ -132,6 +132,28 @@ type Cluster struct {
 	Network              *Network        `json:"network,omitempty"`
 	BlockStorages        []BlockStorage  `json:"blockstorages,omitempty"`
 	Autoscale            *Autoscale      `json:"autoscale,omitempty"`
+	// EnableHAKnown reports whether the API response carried an "enable_ha"
+	// value. Some cluster detail responses omit it, so EnableHA alone would
+	// otherwise look like an explicit false.
+	EnableHAKnown bool `json:"-"`
+}
+
+// clusterAlias avoids infinite recursion in Cluster.UnmarshalJSON.
+type clusterAlias Cluster
+
+// UnmarshalJSON records whether the API reported high availability, allowing
+// callers to distinguish disabled from unavailable.
+func (c *Cluster) UnmarshalJSON(data []byte) error {
+	aux := struct {
+		EnableHA *bool `json:"enable_ha"`
+		*clusterAlias
+	}{clusterAlias: (*clusterAlias)(c)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	c.EnableHAKnown = aux.EnableHA != nil
+	c.EnableHA = aux.EnableHA != nil && *aux.EnableHA
+	return nil
 }
 
 // BillingCycle represents the billing cycle attached to a cluster.
