@@ -173,12 +173,6 @@ type CreateEgressRuleRequest struct {
 	ICMPCode  string `json:"icmp_code,omitempty"`
 }
 
-// apiResponse is the STKCNSL standard envelope.
-type apiResponse struct {
-	Status string `json:"status"`
-	Data   any    `json:"-"`
-}
-
 type listNetworkResponse struct {
 	Status string    `json:"status"`
 	Data   []Network `json:"data"`

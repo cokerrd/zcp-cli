@@ -83,9 +83,10 @@ shows the `ID` column to copy from. If a name is ambiguous (two VMs share it), t
 command lists the matching IDs and asks you to use one.
 
 Select a named compute plan with `zcp plan vm`; the listing includes each plan's
-`TAG`. For compute-only plans, the price covers compute only. Root disks and
-network resources are billed separately. Every new instance needs a named root
-storage tier and an explicit root-disk capacity in GB.
+`TAG`. Compute and root-storage selections are sent separately. The platform
+determines charges for compute, root disks, and network resources. Every new
+instance needs a named root-storage tier and an explicit root-disk capacity in
+GB.
 
 ```bash
 # List and inspect
@@ -594,10 +595,10 @@ zcp kubernetes create \
   --enable-csi \
   --ssh-key mykey
 
-# The selected billing cycle applies to the resource subscriptions created for
-# control-plane nodes, worker nodes, and their root volumes. Network, load
-# balancer, and public-IP billing depends on the enabled platform packages and
-# feature flags.
+# The selected plans and billing cycle describe the control-plane, worker, and
+# root-volume resources in the request. Charges are determined by the platform.
+# Network, load balancer, and public-IP charges depend on enabled platform
+# packages and feature flags.
 # Use --enable-csi to request Cloud Storage Integration for supported clusters.
 
 # Kubeconfig

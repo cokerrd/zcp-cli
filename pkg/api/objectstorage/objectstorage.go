@@ -320,14 +320,6 @@ type keySingleResponse struct {
 	Data    Key    `json:"data"`
 }
 
-// objectListResponse is the API envelope for the object list endpoint.
-// The live API wraps files inside data.files[], not data[].
-type objectListResponse struct {
-	Status  string         `json:"status"`
-	Message string         `json:"message"`
-	Data    ObjectListData `json:"data"`
-}
-
 // Service provides object storage API operations.
 type Service struct {
 	client *httpclient.Client

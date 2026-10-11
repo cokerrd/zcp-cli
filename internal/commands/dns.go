@@ -485,6 +485,7 @@ func runDNSRecordDelete(cmd *cobra.Command, domainSlug string, recordID int, yes
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(getTimeout(cmd))*time.Second)
 	defer cancel()
 
+	//lint:ignore SA1019 --record-id intentionally supports legacy DNS deployments that expose numeric record IDs.
 	if err := svc.DeleteRecord(ctx, domainSlug, recordID); err != nil {
 		if apierrors.IsResourceNotFound(err) {
 			fmt.Fprintf(os.Stderr, "DNS record %d not found (already deleted).\n", recordID)

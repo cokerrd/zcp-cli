@@ -7,10 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
 
 ## [Unreleased]
 
+## [v1.0.0] - 2026-10-11
+
 ### Added
 
 - **Safe VM backup restore.** `zcp vm-backup restore <vm-slug> <backup-slug>` verifies that the VM is stopped and that the selected backup is ready, belongs to that VM, and is in the selected region and project before it requests a restore. The command does not stop the VM automatically. It reports when the restore request is accepted, not when the restore is complete.
-- **Kubernetes create uses separate control-plane, worker, and root-volume plans.** `zcp kubernetes create` now requires `--control-plane-plan`, `--worker-plan`, and `--storage-plan`, alongside `--storage-category`. The command sends the ZCP API `master_plan`, `worker_plan`, and `blockstorage_plan` fields instead of a single cluster plan. The root-volume plan applies to every node. The selected billing cycle applies to the resulting resource subscriptions: every control-plane and worker VM, and every root volume. The cluster object itself is not billed. Network, load balancer, and public-IP billing remains conditional on enabled platform packages and feature flags. Use `--enable-csi` to request Cloud Storage Integration for a supported cluster. `zcp kubernetes get` now shows resource totals and configuration. `zcp kubernetes scale` enables autoscaling with minimum and maximum worker counts or disables it with a fixed worker count.
+- **Kubernetes create uses separate control-plane, worker, and root-volume plans.** `zcp kubernetes create` now requires `--control-plane-plan`, `--worker-plan`, and `--storage-plan`, alongside `--storage-category`. The command sends the ZCP API `master_plan`, `worker_plan`, and `blockstorage_plan` fields instead of a single cluster plan. The root-volume plan applies to every node. Under the platform's resource-based model, the cluster object is not charged; charges for nodes, root volumes, and enabled network resources are determined by the platform. Use `--enable-csi` to request Cloud Storage Integration for a supported cluster. `zcp kubernetes get` now shows resource totals and configuration. `zcp kubernetes scale` submits autoscaling settings with minimum and maximum worker counts, or disables autoscaling with a fixed worker count. See the known limitations below.
 - **Scheduler-backed VM backup policies.** `zcp vm-backup schedule` creates, lists, reads, updates, pauses, resumes, runs, and deletes VM backup policies. Policies support hourly, daily, weekly, and monthly intervals, IANA timezones, retention counts, names, and descriptions. Weekly policies select a weekday; monthly policies select a day of the month. Policies can request an immediate first backup.
 - **`everyOtherDay` policy warning.** The command exposes the API's `everyOtherDay` value. The current platform returns an error after persisting that policy, so the command directs users to list policies before retrying.
 
@@ -28,6 +30,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/), using
 ### Changed
 
 - **Instance and Kubernetes creation now select root storage separately.** `zcp instance create` requires a named `--plan`, `--blockstorage-plan`, and `--root-disk-size`. `zcp kubernetes create` requires `--control-plane-plan`, `--worker-plan`, `--storage-plan`, and `--root-disk-size`. The root storage tier and capacity are sent separately from fixed compute plans. `zcp kubernetes get` lists each root volume's reported capacity separately from compute-plan storage. The retired instance `--cpu`, `--memory`, and `--disk` flags no longer select custom compute. Use `zcp plan vm` to choose a plan; its output includes `TAG`.
+
+### Known limitations
+
+- **Automatic Kubernetes scale-out failed in staging.** `zcp kubernetes scale --enable-autoscaling` submitted the requested autoscaling configuration, but no worker was added. Staging scaling tests also recreated existing node root-volume subscriptions. Billing correctness after scaling remains unverified; this release does not resolve that platform issue. Manual worker scaling was tested separately.
+- **`everyOtherDay` policy creation can persist before failing.** List VM backup schedules after an error and remove any unintended policy before retrying.
+- **Kubernetes create/delete and VM backup restore responses are acceptance-only.** They confirm that the platform accepted the request, not that the operation completed. Check the resource's current status and, after a restore, its activity logs.
 
 ## [v0.0.31] - 2026-10-09
 
