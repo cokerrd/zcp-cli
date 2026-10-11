@@ -74,6 +74,114 @@ func TestSnapshotList(t *testing.T) {
 	}
 }
 
+func TestSnapshotListPaginatesAllPages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		var data []snapshot.Snapshot
+		switch page {
+		case "", "1":
+			data = []snapshot.Snapshot{{Slug: "snapshot-1"}, {Slug: "snapshot-2"}}
+		case "2":
+			data = []snapshot.Snapshot{{Slug: "snapshot-3"}}
+		default:
+			t.Errorf("unexpected page %q", page)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(listResponse{
+			Status:      "Success",
+			CurrentPage: pageNumber(page),
+			Data:        data,
+			Total:       3,
+		})
+	}))
+	defer srv.Close()
+
+	snapshots, err := snapshot.NewService(newTestClient(t, srv)).List(context.Background(), "", "")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(snapshots) != 3 || snapshots[2].Slug != "snapshot-3" {
+		t.Fatalf("List() = %#v, want all three pages", snapshots)
+	}
+}
+
+func TestSnapshotListReturnsNoPartialResultsWhenLaterPageFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			http.Error(w, "upstream failure", http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(listResponse{
+			Status:      "Success",
+			CurrentPage: 1,
+			Data:        []snapshot.Snapshot{{Slug: "snapshot-1"}},
+			Total:       2,
+		})
+	}))
+	defer srv.Close()
+
+	snapshots, err := snapshot.NewService(newTestClient(t, srv)).List(context.Background(), "", "")
+	if err == nil {
+		t.Fatal("List() error = nil, want later-page error")
+	}
+	if snapshots != nil {
+		t.Fatalf("List() snapshots = %#v, want nil rather than partial results", snapshots)
+	}
+}
+
+func TestSnapshotListRejectsMoreSnapshotsThanReportedTotal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		data := []snapshot.Snapshot{{Slug: "snapshot-1"}, {Slug: "snapshot-2"}}
+		if page == "2" {
+			data = []snapshot.Snapshot{{Slug: "snapshot-3"}, {Slug: "snapshot-4"}}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(listResponse{
+			Status:      "Success",
+			CurrentPage: pageNumber(page),
+			Data:        data,
+			Total:       3,
+		})
+	}))
+	defer srv.Close()
+
+	snapshots, err := snapshot.NewService(newTestClient(t, srv)).List(context.Background(), "", "")
+	if err == nil {
+		t.Fatal("List() error = nil, want reported-total validation error")
+	}
+	if snapshots != nil {
+		t.Fatalf("List() snapshots = %#v, want nil rather than inconsistent results", snapshots)
+	}
+}
+
+func TestSnapshotListRejectsSnapshotsWithExplicitZeroTotal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(listResponse{
+			Status: "Success",
+			Data:   []snapshot.Snapshot{{Slug: "snapshot-1"}},
+			Total:  0,
+		})
+	}))
+	defer srv.Close()
+
+	_, err := snapshot.NewService(newTestClient(t, srv)).List(context.Background(), "", "")
+	if err == nil {
+		t.Fatal("List() error = nil, want explicit-zero-total validation error")
+	}
+}
+
+func pageNumber(page string) int {
+	if page == "2" {
+		return 2
+	}
+	return 1
+}
+
 func TestSnapshotListWithFilters(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.URL.Query().Get("filter[region]"); got != "yow-1" {

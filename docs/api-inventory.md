@@ -19,7 +19,7 @@
 | 5   | `/virtual-machines/{SLUG}/stop`                  | PUT    | Stop VM                  | `vm`      |
 | 6   | `/virtual-machines/{SLUG}/reboot`                | PUT    | Reboot VM                | `vm`      |
 | 7   | `/virtual-machines/{SLUG}/reset`                 | PUT    | Reset VM                 | `vm`      |
-| 8   | `/virtual-machines/{SLUG}/change-label`          | POST   | Change VM label          | `vm`      |
+| 8   | `/virtual-machines/{SLUG}/change-hostname`       | POST   | Change VM hostname       | `vm`      |
 | 9   | `/virtual-machines/{SLUG}/change-password`       | POST   | Change VM password       | `vm`      |
 | 10  | `/virtual-machines/{SLUG}/change-plan`           | POST   | Change VM plan/sizing    | `vm`      |
 | 11  | `/virtual-machines/{SLUG}/change-template`       | POST   | Change VM template       | `vm`      |

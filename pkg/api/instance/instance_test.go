@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -281,112 +282,149 @@ func TestStop(t *testing.T) {
 	}
 }
 
-func TestDelete(t *testing.T) {
-	var called bool
+func TestDeleteSubmitsServiceCancellation(t *testing.T) {
+	var cancelBody map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/virtual-machines/test-vm" {
-			t.Errorf("method=%s path=%s", r.Method, r.URL.Path)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines/test-vm":
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "Success",
+				"data": map[string]any{
+					"slug": "canonical-vm", "billing_cycle": map[string]any{"unit": "hour"},
+				},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/billing/service-cancel-requests/canonical-vm":
+			if err := json.NewDecoder(r.Body).Decode(&cancelBody); err != nil {
+				t.Errorf("decode cancellation body: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{"status": "Success", "message": "Cancellation scheduled"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
 		}
-		if got := r.URL.Query().Get("expunge"); got != "" {
-			t.Errorf("expunge query param should be absent, got %q", got)
-		}
-		if got := r.URL.Query().Get("delete_public_ip"); got != "" {
-			t.Errorf("delete_public_ip query param should be absent, got %q", got)
-		}
-		called = true
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "Success",
-			"message": "Virtual machine deleted successfully.",
-			"data":    nil,
-		})
-	}))
-	defer srv.Close()
-
-	svc := instance.NewService(newClient(srv.URL))
-	if err := svc.Delete(context.Background(), "test-vm", false, false); err != nil {
-		t.Fatalf("Delete() error = %v", err)
-	}
-	if !called {
-		t.Error("DELETE request was never made")
-	}
-}
-
-func TestDelete_Force(t *testing.T) {
-	var called bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/virtual-machines/test-vm" {
-			t.Errorf("method=%s path=%s", r.Method, r.URL.Path)
-		}
-		if got := r.URL.Query().Get("expunge"); got != "true" {
-			t.Errorf("expunge = %q, want %q", got, "true")
-		}
-		if got := r.URL.Query().Get("delete_public_ip"); got != "true" {
-			t.Errorf("delete_public_ip = %q, want %q", got, "true")
-		}
-		called = true
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "Success",
-			"message": "Virtual machine deleted successfully.",
-			"data":    nil,
-		})
 	}))
 	defer srv.Close()
 
 	svc := instance.NewService(newClient(srv.URL))
 	if err := svc.Delete(context.Background(), "test-vm", true, true); err != nil {
-		t.Fatalf("Delete(force) error = %v", err)
+		t.Fatalf("Delete() error = %v", err)
 	}
-	if !called {
-		t.Error("DELETE request was never made")
+	if got := cancelBody["service_name"]; got != "Virtual Machine" {
+		t.Errorf("service_name = %v, want %q", got, "Virtual Machine")
 	}
-}
-
-func TestDelete_DeletePublicIP(t *testing.T) {
-	var called bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/virtual-machines/test-vm" {
-			t.Errorf("method=%s path=%s", r.Method, r.URL.Path)
-		}
-		if got := r.URL.Query().Get("delete_public_ip"); got != "true" {
-			t.Errorf("delete_public_ip = %q, want %q", got, "true")
-		}
-		if got := r.URL.Query().Get("expunge"); got != "" {
-			t.Errorf("expunge query param should be absent, got %q", got)
-		}
-		called = true
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "Success",
-			"message": "Virtual machine deleted successfully.",
-			"data":    nil,
-		})
-	}))
-	defer srv.Close()
-
-	svc := instance.NewService(newClient(srv.URL))
-	if err := svc.Delete(context.Background(), "test-vm", false, true); err != nil {
-		t.Fatalf("Delete(deletePublicIP) error = %v", err)
+	if got := cancelBody["billing_cycle"]; got != "hour" {
+		t.Errorf("billing_cycle = %v, want %q", got, "hour")
 	}
-	if !called {
-		t.Error("DELETE request was never made")
+	if got := cancelBody["delete_public_ip"]; got != true {
+		t.Errorf("delete_public_ip = %v, want true", got)
 	}
 }
 
-func TestDelete_NotFound(t *testing.T) {
+func TestDeleteRejectsUnknownBillingCycle(t *testing.T) {
+	var cancellationRequested bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":  "Error",
-			"message": "Virtual machine not found.",
-		})
+		if r.Method == http.MethodGet && r.URL.Path == "/virtual-machines/test-vm" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"status": "Success",
+				"data":   map[string]any{"slug": "test-vm", "billing_cycle": map[string]any{"unit": "quarter"}},
+			})
+			return
+		}
+		cancellationRequested = true
+		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
-	svc := instance.NewService(newClient(srv.URL))
-	if err := svc.Delete(context.Background(), "nonexistent", false, false); err == nil {
-		t.Fatal("Delete() expected error for 404, got nil")
+	err := instance.NewService(newClient(srv.URL)).Delete(context.Background(), "test-vm", false, false)
+	if err == nil || !strings.Contains(err.Error(), "could not determine billing cycle") {
+		t.Fatalf("Delete() error = %v, want unknown billing-cycle error", err)
+	}
+	if cancellationRequested {
+		t.Fatal("Delete() submitted cancellation without a recognized billing cycle")
+	}
+}
+
+func TestChangeHostnameSendsNameAndHostname(t *testing.T) {
+	cases := []struct {
+		name string
+		req  instance.ChangeLabelRequest
+	}{
+		{name: "keyed literal", req: instance.ChangeLabelRequest{Name: "from-name", Hostname: "from-hostname"}},
+		{name: "legacy unkeyed literal", req: instance.ChangeLabelRequest{"legacy-name", "legacy-hostname"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/virtual-machines/test-vm/change-hostname" {
+					t.Errorf("method=%s path=%s", r.Method, r.URL.Path)
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Errorf("decode request body: %v", err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(map[string]any{"status": "Success", "message": "Updated"})
+			}))
+			defer srv.Close()
+
+			_, err := instance.NewService(newClient(srv.URL)).ChangeHostname(context.Background(), "test-vm", tc.req)
+			if err != nil {
+				t.Fatalf("ChangeHostname() error = %v", err)
+			}
+			if got := body["name"]; got != tc.req.Name {
+				t.Errorf("name = %v, want %q", got, tc.req.Name)
+			}
+			if got := body["hostname"]; got != tc.req.Hostname {
+				t.Errorf("hostname = %v, want %q", got, tc.req.Hostname)
+			}
+			if _, ok := body["vm_label"]; ok {
+				t.Error("request body included vm_label")
+			}
+		})
+	}
+}
+
+func TestChangeHostnameRequiresNameAndHostname(t *testing.T) {
+	cases := []struct {
+		name string
+		req  instance.ChangeLabelRequest
+		want string
+	}{
+		{name: "zero value", req: instance.ChangeLabelRequest{}, want: "current instance name is required"},
+		{name: "name only", req: instance.ChangeLabelRequest{Name: "vm-name"}, want: "hostname is required"},
+		{name: "hostname only", req: instance.ChangeLabelRequest{Hostname: "host-name"}, want: "current instance name is required"},
+		{name: "whitespace name", req: instance.ChangeLabelRequest{Name: " \t", Hostname: "host-name"}, want: "current instance name is required"},
+		{name: "whitespace hostname", req: instance.ChangeLabelRequest{Name: "vm-name", Hostname: " \t"}, want: "hostname is required"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				http.Error(w, "request should not be sent", http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+
+			resp, err := instance.NewService(newClient(srv.URL)).ChangeHostname(context.Background(), "test-vm", tc.req)
+			if resp != nil {
+				t.Errorf("ChangeHostname() response = %#v, want nil", resp)
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("ChangeHostname() error = %v, want %q", err, tc.want)
+			}
+			if got := calls.Load(); got != 0 {
+				t.Errorf("network calls = %d, want 0", got)
+			}
+		})
 	}
 }
 

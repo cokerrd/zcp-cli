@@ -976,7 +976,7 @@ func newInstanceChangeHostnameCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:     "change-hostname <slug>",
-		Short:   "Change the hostname of a virtual machine",
+		Short:   "Change a virtual machine hostname and restart it",
 		Args:    exactArgs(1),
 		Example: `  zcp instance change-hostname my-vm --hostname new-hostname`,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -986,7 +986,7 @@ func newInstanceChangeHostnameCmd() *cobra.Command {
 			return runInstanceChangeHostname(cmd, args[0], hostname)
 		},
 	}
-	cmd.Flags().StringVar(&hostname, "hostname", "", "New hostname (required)")
+	cmd.Flags().StringVar(&hostname, "hostname", "", "New hostname; the virtual machine restarts (required)")
 	return cmd
 }
 
@@ -1006,7 +1006,7 @@ func runInstanceChangeHostname(cmd *cobra.Command, slug, hostname string) error 
 	}
 
 	resp, err := svc.ChangeHostname(ctx, vm.Slug, instance.ChangeLabelRequest{
-		Name:     hostname,
+		Name:     vm.Name,
 		Hostname: hostname,
 	})
 	if err != nil {

@@ -145,6 +145,7 @@ zcp instance reset <slug>            # Hard reset (prompts for confirmation)
 zcp instance change-plan <slug> --plan <new-plan> --billing-cycle hourly
 
 # Change hostname
+# This restarts the instance.
 zcp instance change-hostname <slug> --hostname new-hostname
 
 # Change OS (DESTRUCTIVE: reinstalls the VM)
@@ -205,8 +206,9 @@ zcp volume create \
   --project default-9 \
   --region yul-1 \
   --billing-cycle hourly \
-  --storage-category pro-nvme \
-  --plan b2g1
+  --storage-category ssd-storage \
+  --plan b2l2 \
+  --size 50
 zcp volume create ... --vm <vm-slug>   # Attach on creation
 zcp volume attach <volume-slug> --vm <vm-slug>
 zcp volume detach <volume-slug>
