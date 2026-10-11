@@ -12,18 +12,6 @@ import (
 	"github.com/zsoftly/zcp-cli/pkg/httpclient"
 )
 
-// newFastClient returns a client pointing at srv with a short timeout and
-// MaxRetries set to max so tests don't wait for real backoff durations.
-// Tests that need to exercise backoff timing override Timeout themselves.
-func newTestClient(srv *httptest.Server, maxRetries int) *httpclient.Client {
-	return httpclient.New(httpclient.Options{
-		BaseURL:     srv.URL,
-		BearerToken: "tok",
-		Timeout:     5 * time.Second,
-		MaxRetries:  maxRetries,
-	})
-}
-
 // TestRetryGET500EventuallySucceeds verifies that a GET retries on 500 and
 // succeeds once the server starts returning 200.
 func TestRetryGET500EventuallySucceeds(t *testing.T) {

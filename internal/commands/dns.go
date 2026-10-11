@@ -84,9 +84,8 @@ func newDNSShowCmd() *cobra.Command {
 	return cmd
 }
 
-// domainStatusCell renders a domain's status for display. The show endpoint
-// does not return a status field, so print "-" rather than a misleading
-// "false" (see issue #51); the list endpoint does return one.
+// domainStatusCell renders a domain's status for display. A missing status is
+// displayed as "-" rather than being confused with an explicit false.
 func domainStatusCell(d *dns.Domain) string {
 	if !d.StatusKnown {
 		return "-"
@@ -107,6 +106,11 @@ func runDNSShow(cmd *cobra.Command, slug string) error {
 	domain, err := svc.Show(ctx, slug)
 	if err != nil {
 		return fmt.Errorf("dns show: %w", err)
+	}
+	if !domain.StatusKnown {
+		if err := resolveDNSDomainStatus(ctx, svc, domain); err != nil {
+			return fmt.Errorf("dns show: %w", err)
+		}
 	}
 
 	// Print domain details
@@ -141,6 +145,21 @@ func runDNSShow(cmd *cobra.Command, slug string) error {
 		return printer.PrintTable(recHeaders, recRows)
 	}
 
+	return nil
+}
+
+// resolveDNSDomainStatus fills a status omitted by the detail endpoint from a
+// matching list entry that reports it. A missing matching entry remains unknown
+// rather than being guessed from another field.
+func resolveDNSDomainStatus(ctx context.Context, svc *dns.Service, domain *dns.Domain) error {
+	listed, err := svc.FindBySlug(ctx, domain.Slug)
+	if err != nil {
+		return fmt.Errorf("resolving status for DNS domain %s: %w", domain.Slug, err)
+	}
+	if listed != nil && listed.StatusKnown {
+		domain.Status = listed.Status
+		domain.StatusKnown = true
+	}
 	return nil
 }
 
@@ -466,6 +485,7 @@ func runDNSRecordDelete(cmd *cobra.Command, domainSlug string, recordID int, yes
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(getTimeout(cmd))*time.Second)
 	defer cancel()
 
+	//lint:ignore SA1019 --record-id intentionally supports legacy DNS deployments that expose numeric record IDs.
 	if err := svc.DeleteRecord(ctx, domainSlug, recordID); err != nil {
 		if apierrors.IsResourceNotFound(err) {
 			fmt.Fprintf(os.Stderr, "DNS record %d not found (already deleted).\n", recordID)

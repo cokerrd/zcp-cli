@@ -5,12 +5,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/zsoftly/zcp-cli/internal/output"
 	"github.com/zsoftly/zcp-cli/pkg/api/apierrors"
+	"github.com/zsoftly/zcp-cli/pkg/api/instance"
 	"github.com/zsoftly/zcp-cli/pkg/api/vmbackup"
 )
 
@@ -23,6 +26,8 @@ func NewVMBackupCmd() *cobra.Command {
 	cmd.AddCommand(newVMBackupListCmd())
 	cmd.AddCommand(newVMBackupCreateCmd())
 	cmd.AddCommand(newVMBackupDeleteCmd())
+	cmd.AddCommand(newVMBackupRestoreCmd())
+	cmd.AddCommand(newVMBackupScheduleCmd())
 	return cmd
 }
 
@@ -70,6 +75,117 @@ func runVMBackupList(cmd *cobra.Command) error {
 		})
 	}
 	return printer.PrintTable(headers, rows)
+}
+
+// ─── Restore ────────────────────────────────────────────────────────────────
+
+func newVMBackupRestoreCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "restore <vm-slug> <backup-slug>",
+		Short: "Restore a stopped VM from a backup (DESTRUCTIVE)",
+		Long: `Restore a stopped VM from a backup.
+
+Restoring overwrites the VM's current disks. The command verifies the VM is
+stopped, the backup belongs to that VM in the selected region and project, and
+the backup is ready before it sends the restore request. A successful response
+only confirms the request was accepted. Wait for the VM to leave Restoring and
+check the activity log for failures.`,
+		Args:    exactArgs(2),
+		Example: `  zcp vm-backup restore my-vm provider-backup-my-vm-2026-10-11 --yes`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runVMBackupRestore(cmd, args[0], args[1], yes)
+		},
+	}
+	cmd.Flags().BoolVar(&yes, "yes", false, "Skip confirmation prompt")
+	return cmd
+}
+
+func runVMBackupRestore(cmd *cobra.Command, vmSlug, backupSlug string, yes bool) error {
+	_, client, printer, err := buildClientAndPrinter(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(getTimeout(cmd))*time.Second)
+	defer cancel()
+
+	region, project := scopedRegionProject(cmd)
+	vm, err := resolveVMBackupRestoreVM(ctx, instance.NewService(client), region, project, vmSlug)
+	if err != nil {
+		return fmt.Errorf("vm-backup restore: %w", err)
+	}
+	meta, err := instance.NewService(client).Meta(ctx, vm.Slug)
+	if err != nil {
+		return fmt.Errorf("vm-backup restore: could not determine the current state of VM %q: %w", vm.Slug, err)
+	}
+	if !strings.EqualFold(meta.State, "Stopped") {
+		if strings.EqualFold(meta.State, "Running") {
+			return fmt.Errorf("vm-backup restore: VM %q must be Stopped before restore (current state: %s). Run `zcp instance stop %s --wait` and retry", vm.Slug, meta.State, vm.Slug)
+		}
+		return fmt.Errorf("vm-backup restore: VM %q must be Stopped before restore (current state: %s)", vm.Slug, stateOrUnknown(meta.State))
+	}
+
+	svc := vmbackup.NewService(client)
+	snapshots, err := svc.ListSnapshots(ctx, region, project)
+	if err != nil {
+		return fmt.Errorf("vm-backup restore: %w", err)
+	}
+	backup, err := scopedVMBackupSnapshot(snapshots, backupSlug, vm.Slug, region, project)
+	if err != nil {
+		return fmt.Errorf("vm-backup restore: %w", err)
+	}
+	if backup.IsValidForRestore == nil || !*backup.IsValidForRestore {
+		return fmt.Errorf("vm-backup restore: backup %q is not ready for restore (state: %s, status: %s)", backupSlug, stateOrUnknown(backup.State), stateOrUnknown(backup.Status))
+	}
+	if !yes && !confirmAction(cmd, "Restore backup %q onto VM %q? This overwrites the VM's current disks and cannot be undone.", backupSlug, vm.Slug) {
+		return nil
+	}
+
+	if _, err := svc.Restore(ctx, vm.Slug, backupSlug); err != nil {
+		return fmt.Errorf("vm-backup restore: %w", err)
+	}
+	printer.Fprintf("Restore requested for VM backup %q on VM %q. The restore is not complete. Wait for the VM to leave Restoring; check the activity log for failures.\n", backupSlug, vm.Slug)
+	return nil
+}
+
+func resolveVMBackupRestoreVM(ctx context.Context, svc *instance.Service, region, project, slug string) (*instance.VirtualMachine, error) {
+	vms, err := svc.List(ctx, region, project)
+	if err != nil {
+		return nil, fmt.Errorf("listing VMs in scope: %w", err)
+	}
+	for i := range vms {
+		if vms[i].Slug == slug {
+			return &vms[i], nil
+		}
+	}
+	return nil, fmt.Errorf("VM %q was not found in region %q and project %q", slug, region, project)
+}
+
+func scopedVMBackupSnapshot(snapshots []vmbackup.SnapshotBackup, backupSlug, vmSlug, region, project string) (*vmbackup.SnapshotBackup, error) {
+	for i := range snapshots {
+		backup := &snapshots[i]
+		if backup.Slug != backupSlug {
+			continue
+		}
+		if backup.DeletedAt != nil {
+			return nil, fmt.Errorf("backup %q is deleted", backupSlug)
+		}
+		if backup.VirtualMachine == nil || backup.VirtualMachine.Slug != vmSlug {
+			return nil, fmt.Errorf("backup %q does not belong to VM %q", backupSlug, vmSlug)
+		}
+		if backup.Region == nil || backup.Region.Slug != region || backup.Project == nil || backup.Project.Slug != project {
+			return nil, fmt.Errorf("backup %q is not in region %q and project %q", backupSlug, region, project)
+		}
+		return backup, nil
+	}
+	return nil, fmt.Errorf("backup %q was not found in region %q and project %q", backupSlug, region, project)
+}
+
+func stateOrUnknown(state string) string {
+	if strings.TrimSpace(state) == "" {
+		return "unknown"
+	}
+	return state
 }
 
 // ─── Create ─────────────────────────────────────────────────────────────────
@@ -217,7 +333,7 @@ func runVMBackupDelete(cmd *cobra.Command, slug string) error {
 }
 
 func runVMBackupCreate(cmd *cobra.Command, vmSlug string, req vmbackup.CreateRequest) error {
-	_, client, _, err := buildClientAndPrinter(cmd)
+	_, client, printer, err := buildClientAndPrinter(cmd)
 	if err != nil {
 		return err
 	}
@@ -226,12 +342,118 @@ func runVMBackupCreate(cmd *cobra.Command, vmSlug string, req vmbackup.CreateReq
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(getTimeout(cmd))*time.Second)
 	defer cancel()
 
+	// The create endpoint usually returns only an acknowledgement. Take a scoped
+	// baseline before creating. Use a later list to identify the new schedule
+	// without adopting an existing matching schedule.
+	before, err := svc.List(ctx, req.Region, req.Project)
+	if err != nil {
+		return fmt.Errorf("vm-backup create: listing existing backups before create: %w", err)
+	}
+	known := make(map[string]struct{}, len(before))
+	for _, backup := range before {
+		if backup.Slug != "" {
+			known[backup.Slug] = struct{}{}
+		}
+	}
+
 	resp, err := svc.Create(ctx, vmSlug, req)
 	if err != nil {
 		return fmt.Errorf("vm-backup create: %w", err)
 	}
 
-	fmt.Fprintf(cmd.ErrOrStderr(), "VM backup created: %s. %s\n", resp.Status, resp.Message)
-	fmt.Fprintln(cmd.ErrOrStderr(), "Run 'zcp vm-backup list' to see the schedule slug.")
-	return nil
+	if slug := vmBackupActionSlug(resp); slug != "" {
+		if _, exists := known[slug]; !exists {
+			return printVMBackupCreated(printer, &vmbackup.VMBackup{
+				Slug:           slug,
+				VirtualMachine: &vmbackup.VMRef{Slug: vmSlug},
+				Interval:       req.Interval,
+				At:             req.At,
+			})
+		}
+	}
+
+	created, err := findCreatedVMBackup(ctx, svc, known, vmSlug, req)
+	if err != nil {
+		return fmt.Errorf("VM backup for %q was created, but its schedule slug could not be determined: %w. Run 'zcp vm-backup list' to find it before creating another schedule", vmSlug, err)
+	}
+	return printVMBackupCreated(printer, created)
+}
+
+// vmBackupCreateLookupAttempts bounds the read-only discovery performed after
+// the API accepts a create request. A create is never retried.
+const vmBackupCreateLookupAttempts = 3
+
+// vmBackupActionSlug returns a slug only from an object response containing a
+// non-empty slug. The current API commonly returns an empty data field, which
+// is why runVMBackupCreate also resolves the new schedule through the list
+// endpoint.
+func vmBackupActionSlug(resp *vmbackup.ActionResponse) string {
+	if resp == nil {
+		return ""
+	}
+	data, ok := resp.Data.(map[string]interface{})
+	if !ok {
+		return ""
+	}
+	slug, _ := data["slug"].(string)
+	return strings.TrimSpace(slug)
+}
+
+func findCreatedVMBackup(ctx context.Context, svc *vmbackup.Service, known map[string]struct{}, vmSlug string, req vmbackup.CreateRequest) (*vmbackup.VMBackup, error) {
+	candidates := make(map[string]*vmbackup.VMBackup)
+	for attempt := 0; attempt < vmBackupCreateLookupAttempts; attempt++ {
+		backups, err := svc.List(ctx, req.Region, req.Project)
+		if err != nil {
+			return nil, fmt.Errorf("listing backups after create: %w", err)
+		}
+
+		for i := range backups {
+			backup := &backups[i]
+			if backup.Slug == "" || backup.VMSlug() != vmSlug || backup.Interval != req.Interval || backup.At != req.At {
+				continue
+			}
+			if _, exists := known[backup.Slug]; exists {
+				continue
+			}
+			candidates[backup.Slug] = backup
+		}
+		if attempt+1 < vmBackupCreateLookupAttempts {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(250 * time.Millisecond):
+			}
+		}
+	}
+	if len(candidates) == 1 {
+		for _, backup := range candidates {
+			return backup, nil
+		}
+	}
+	if len(candidates) > 1 {
+		slugs := make([]string, 0, len(candidates))
+		for slug := range candidates {
+			slugs = append(slugs, slug)
+		}
+		sort.Strings(slugs)
+		return nil, fmt.Errorf("%d new matching backups appeared (%s); cannot determine which schedule was created", len(slugs), strings.Join(slugs, ", "))
+	}
+	return nil, fmt.Errorf("the new schedule did not appear in %d list attempts", vmBackupCreateLookupAttempts)
+}
+
+func printVMBackupCreated(printer *output.Printer, backup *vmbackup.VMBackup) error {
+	if printer.Format() == output.FormatJSON || printer.Format() == output.FormatYAML {
+		return printer.Print(backup)
+	}
+	return printer.PrintTable(
+		[]string{"FIELD", "VALUE"},
+		[][]string{
+			{"Slug", backup.Slug},
+			{"Name", backup.Name},
+			{"VM", backup.VMSlug()},
+			{"Interval", backup.Interval},
+			{"At", strconv.Itoa(backup.At)},
+			{"Scheduled At", backup.ScheduledAt},
+		},
+	)
 }

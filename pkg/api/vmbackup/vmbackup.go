@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 
 	"github.com/zsoftly/zcp-cli/pkg/api/billing"
 	"github.com/zsoftly/zcp-cli/pkg/api/response"
@@ -49,6 +50,25 @@ type VMRef struct {
 	ID   string `json:"id"`
 	Slug string `json:"slug"`
 	Name string `json:"name"`
+}
+
+// ScopeRef identifies a region or project nested in a backup snapshot response.
+type ScopeRef struct {
+	ID   string `json:"id"`
+	Slug string `json:"slug"`
+}
+
+// SnapshotBackup represents a restorable VM backup snapshot.
+type SnapshotBackup struct {
+	ID                string    `json:"id"`
+	Slug              string    `json:"slug"`
+	State             string    `json:"state"`
+	Status            string    `json:"status"`
+	IsValidForRestore *bool     `json:"is_valid_for_restore"`
+	VirtualMachine    *VMRef    `json:"virtual_machine"`
+	Region            *ScopeRef `json:"region"`
+	Project           *ScopeRef `json:"project"`
+	DeletedAt         *string   `json:"deleted_at"`
 }
 
 // VMBackup represents a STKCNSL VM backup.
@@ -192,6 +212,63 @@ func (s *Service) Create(ctx context.Context, vmSlug string, req CreateRequest) 
 	var resp ActionResponse
 	if err := s.client.Post(ctx, "/virtual-machines/"+vmSlug+"/backups", req, &resp); err != nil {
 		return nil, fmt.Errorf("creating VM backup on %s: %w", vmSlug, err)
+	}
+	return &resp, nil
+}
+
+// ListSnapshots returns all VM backup snapshots in the requested region and
+// project. The requested relations identify the owning VM and scope before a
+// destructive restore request is made.
+func (s *Service) ListSnapshots(ctx context.Context, region, project string) ([]SnapshotBackup, error) {
+	var all []SnapshotBackup
+	for page := 1; page <= maxListPages; page++ {
+		q := url.Values{"include": {"region,project,virtual_machine"}}
+		if region != "" {
+			q.Set("filter[region]", region)
+		}
+		if project != "" {
+			q.Set("filter[project]", project)
+		}
+		if page > 1 {
+			q.Set("page", fmt.Sprintf("%d", page))
+		}
+
+		var env Envelope
+		if err := s.client.Get(ctx, "/virtual-machines/backups/snapshots", q, &env); err != nil {
+			return nil, fmt.Errorf("listing VM backup snapshots: %w", err)
+		}
+		if env.Status != "Success" {
+			return nil, fmt.Errorf("listing VM backup snapshots: %s", env.Message)
+		}
+		var snapshots []SnapshotBackup
+		if err := json.Unmarshal(env.Data, &snapshots); err != nil {
+			return nil, fmt.Errorf("decoding VM backup snapshots: %w", err)
+		}
+		if env.CurrentPage > 0 && env.CurrentPage != page {
+			return nil, fmt.Errorf("listing VM backup snapshots: requested page %d but the API returned page %d", page, env.CurrentPage)
+		}
+		all = append(all, snapshots...)
+		if len(snapshots) == 0 || env.LastPage <= 0 || page >= env.LastPage {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("listing VM backup snapshots: exceeded %d pages without reaching the last page", maxListPages)
+}
+
+// Restore requests restoration of a VM backup snapshot. The request is
+// accepted asynchronously; a successful response does not mean restoration
+// has completed.
+func (s *Service) Restore(ctx context.Context, vmSlug, backupSlug string) (*ActionResponse, error) {
+	var resp ActionResponse
+	path := "/virtual-machines/" + url.PathEscape(vmSlug) + "/backups/snapshots/restore/" + url.PathEscape(backupSlug)
+	if err := s.client.Post(ctx, path, nil, &resp); err != nil {
+		return nil, fmt.Errorf("restoring VM backup %s on %s: %w", backupSlug, vmSlug, err)
+	}
+	if !strings.EqualFold(strings.TrimSpace(resp.Status), "Success") {
+		if strings.TrimSpace(resp.Message) != "" {
+			return nil, fmt.Errorf("restoring VM backup %s on %s: %s", backupSlug, vmSlug, resp.Message)
+		}
+		return nil, fmt.Errorf("restoring VM backup %s on %s: unexpected response status %q", backupSlug, vmSlug, resp.Status)
 	}
 	return &resp, nil
 }

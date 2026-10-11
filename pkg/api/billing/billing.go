@@ -386,6 +386,12 @@ func (s *Service) CancelService(ctx context.Context, slug string, req CancelServ
 	if err := s.client.Post(ctx, "/billing/service-cancel-requests/"+slug, req, &env); err != nil {
 		return fmt.Errorf("cancelling service %s: %w", slug, err)
 	}
+	if env.Status != "Success" {
+		if strings.TrimSpace(env.Message) != "" {
+			return fmt.Errorf("cancelling service %s: %s", slug, env.Message)
+		}
+		return fmt.Errorf("cancelling service %s: unexpected response status %q", slug, env.Status)
+	}
 	return nil
 }
 

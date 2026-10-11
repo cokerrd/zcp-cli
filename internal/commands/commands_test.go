@@ -150,9 +150,10 @@ func TestK8sCreateRequiresBillingCycle(t *testing.T) {
 	root.SetOut(&bytes.Buffer{})
 	root.SetErr(&bytes.Buffer{})
 	root.SetArgs([]string{"kubernetes", "create",
-		"--name", "test", "--version", "v1.28.4", "--plan", "k8s-1",
+		"--name", "test", "--version", "v1.28.4", "--control-plane-plan", "k8s-control-1", "--worker-plan", "k8s-worker-1", "--storage-plan", "k8s-root-volume-1",
+		"--root-disk-size", "100",
 		"--cloud-provider", "nimbo", "--region", "noida", "--project", "default-9",
-		"--workers", "1", "--ssh-key", "mykey"})
+		"--workers", "1", "--storage-category", "nvme", "--ssh-key", "mykey"})
 
 	err := root.Execute()
 	if err == nil {
@@ -267,13 +268,27 @@ func TestVMBackupAtOutOfRange(t *testing.T) {
 }
 
 func TestVMBackupAtValidValues(t *testing.T) {
-	// at=12, immediate=1 should pass validation and reach the API. A stub
-	// server stands in for the API so this test never touches the network.
+	// at=12, immediate=1 should pass validation, create the schedule, and
+	// resolve its slug through the scoped listing. A stub server stands in for
+	// the API so this test never touches the network.
 	var gotPath string
+	listCalls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"status":"Success","message":"ok","data":null}`)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines/backups":
+			listCalls++
+			if listCalls == 1 {
+				fmt.Fprint(w, `{"status":"Success","current_page":1,"last_page":1,"data":[]}`)
+				return
+			}
+			fmt.Fprint(w, `{"status":"Success","current_page":1,"last_page":1,"data":[{"slug":"vmb-new","virtual_machine":{"slug":"my-vm"},"interval":"dailyAt","at":12}]}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/virtual-machines/my-vm/backups":
+			gotPath = r.URL.Path
+			fmt.Fprint(w, `{"status":"Success","message":"ok","data":null}`)
+		default:
+			http.NotFound(w, r)
+		}
 	}))
 	defer srv.Close()
 
@@ -409,6 +424,8 @@ func TestInstanceDeleteUsesServiceCancel(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, vmListWithBillingCycle)
+		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines/test-vm/meta":
+			fmt.Fprint(w, `{"status":"Success","data":{"state":"Running"}}`)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/billing/service-cancel-requests/"):
 			cancelPath = r.URL.Path
 			json.NewDecoder(r.Body).Decode(&cancelBody)
@@ -451,6 +468,66 @@ func TestInstanceDeleteUsesServiceCancel(t *testing.T) {
 	}
 }
 
+func TestInstanceDeleteUsesLiveStateBeforeCancellation(t *testing.T) {
+	t.Setenv("ZCP_BEARER_TOKEN", "test-tok")
+	for _, tt := range []struct {
+		name      string
+		metaState string
+		metaCode  int
+		want      string
+		cancel    bool
+	}{
+		{name: "cached state is stale", metaState: "Running", metaCode: http.StatusOK, cancel: true},
+		{name: "starting", metaState: "Starting", metaCode: http.StatusOK, want: "while it is Starting"},
+		{name: "unknown", metaState: "", metaCode: http.StatusOK, want: "current state is unknown"},
+		{name: "meta unavailable", metaCode: http.StatusInternalServerError, want: "could not determine the current state"},
+		{name: "metadata missing after lookup", metaCode: http.StatusNotFound, want: "could not determine the current state"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var cancelCount int
+			cachedVM := vmListWithBillingCycle
+			if tt.name == "cached state is stale" {
+				cachedVM = strings.Replace(cachedVM, `"state":"Running"`, `"state":"Starting"`, 1)
+			}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines":
+					fmt.Fprint(w, cachedVM)
+				case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines/test-vm/meta":
+					if tt.metaCode != http.StatusOK {
+						http.Error(w, "meta unavailable", tt.metaCode)
+						return
+					}
+					fmt.Fprintf(w, `{"status":"Success","data":{"state":%q}}`, tt.metaState)
+				case r.Method == http.MethodPost && r.URL.Path == "/billing/service-cancel-requests/test-vm":
+					cancelCount++
+					fmt.Fprint(w, `{"status":"Success"}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+
+			_, _, err := execCmd(t, NewInstanceCmd(), "delete", "test-vm", "--yes", "--api-url", srv.URL)
+			if tt.cancel {
+				if err != nil {
+					t.Fatalf("delete error = %v", err)
+				}
+				if cancelCount != 1 {
+					t.Errorf("cancellation requests = %d, want 1", cancelCount)
+				}
+				return
+			}
+			if tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("delete error = %v, want %q", err, tt.want)
+			}
+			if cancelCount != 0 {
+				t.Errorf("cancellation requests = %d, want 0", cancelCount)
+			}
+		})
+	}
+}
+
 // TestInstanceDeleteRetainPublicIP verifies --delete-public-ip=false sends
 // delete_public_ip:false so the auto-assigned IP is kept.
 func TestInstanceDeleteRetainPublicIP(t *testing.T) {
@@ -460,6 +537,8 @@ func TestInstanceDeleteRetainPublicIP(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, vmListWithBillingCycle)
+		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines/test-vm/meta":
+			fmt.Fprint(w, `{"status":"Success","data":{"state":"Running"}}`)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/billing/service-cancel-requests/"):
 			json.NewDecoder(r.Body).Decode(&cancelBody)
 			w.Header().Set("Content-Type", "application/json")
@@ -491,6 +570,8 @@ func TestInstanceDeleteForceIsNoOp(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, vmListWithBillingCycle)
+		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines/test-vm/meta":
+			fmt.Fprint(w, `{"status":"Success","data":{"state":"Running"}}`)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/billing/service-cancel-requests/"):
 			sawCancel.Store(true)
 			w.Header().Set("Content-Type", "application/json")
@@ -816,6 +897,10 @@ func TestInstanceDeleteRequiresBillingCycle(t *testing.T) {
 			fmt.Fprint(w, vmListNoBillingCycle)
 			return
 		}
+		if r.Method == http.MethodGet && r.URL.Path == "/virtual-machines/nc-vm/meta" {
+			fmt.Fprint(w, `{"status":"Success","data":{"state":"Running"}}`)
+			return
+		}
 		if r.Method == http.MethodPost {
 			t.Error("cancel must not be submitted when the billing cycle can't be determined")
 		}
@@ -839,6 +924,8 @@ func TestInstanceDeleteBillingCycleOverride(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, vmListNoBillingCycle)
+		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines/nc-vm/meta":
+			fmt.Fprint(w, `{"status":"Success","data":{"state":"Running"}}`)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/billing/service-cancel-requests/"):
 			json.NewDecoder(r.Body).Decode(&cancelBody)
 			fmt.Fprint(w, `{"status":"Success","data":null}`)
@@ -871,6 +958,8 @@ func TestInstanceDeleteDerivesBillingCycleFromOffering(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, vmListOfferingBillingCycle)
+		case r.Method == http.MethodGet && r.URL.Path == "/virtual-machines/off-vm/meta":
+			fmt.Fprint(w, `{"status":"Success","data":{"state":"Running"}}`)
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/billing/service-cancel-requests/"):
 			json.NewDecoder(r.Body).Decode(&cancelBody)
 			fmt.Fprint(w, `{"status":"Success","data":null}`)

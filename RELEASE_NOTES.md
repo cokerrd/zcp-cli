@@ -1,53 +1,142 @@
-# zcp v0.0.31 Release Notes
+# zcp v1.0.0 Release Notes
 
-v0.0.31 fixes ACL rule listings that stopped at the first API page, adds
-bounded ACL rule listing controls, and includes security updates to the Go
-toolchain and networking dependencies.
+v1.0.0 requires separate compute and root-storage selections for new instances
+and Kubernetes clusters. It adds VM backup schedule commands, restore
+preflight checks, lifecycle-state checks for deletion, and complete DNS lists.
+
+Replace every quoted placeholder in the examples with a value from your account.
 
 ## Highlights
 
-**List every rule in an ACL.** `zcp acl rules` now retrieves every API page, so
-ACLs with more than the default page size return their complete rule set.
+### Choose compute and root storage separately
+
+New instances use a named compute plan, a named root-storage plan, and an
+explicit root-disk capacity. Kubernetes clusters use distinct control-plane,
+worker, and root-storage plans. This makes the resources selected for compute
+and root storage explicit in the request.
 
 ```bash
-zcp acl rules <vpc-slug> <acl-name-or-id>
+zcp plan vm --region yul-1
+zcp plan storage --region yul-1
+
+zcp instance create \
+  --name my-vm \
+  --template ubuntu-2604-lts-1 \
+  --plan "<compute-plan>" \
+  --blockstorage-plan "<root-storage-plan>" \
+  --root-disk-size 100 \
+  --network-plan "<network-plan>" \
+  --storage-category "<storage-category>" \
+  --billing-cycle hourly \
+  --region yul-1 \
+  --project default-9
 ```
 
-**Safer API pagination.** If a later page fails or reports inconsistent
-pagination metadata, the command returns an error instead of a partial rule
-list. A response that explicitly reports `total: 0` must contain no rules.
-
-**Choose how many ACL rules to return.** Use `--max-items` for a bounded
-result, `--starting-token` to resume it, `--page-size` to set the API request
-size, or `--no-paginate` to request one API page. Bounded and single-page JSON
-and YAML output use an object with a `rules` array and optional `next_token`.
-Table output prints the continuation token on standard error.
+Kubernetes creation now selects each node role and the root volume separately.
+The root-storage selection and capacity apply to every cluster node.
 
 ```bash
-zcp acl rules <vpc-slug> <acl-name-or-id> --max-items 25 --output json
-zcp acl rules <vpc-slug> <acl-name-or-id> --max-items 25 --starting-token '<next_token>' --output json
-zcp acl rules <vpc-slug> <acl-name-or-id> --no-paginate --output yaml
+zcp kubernetes create \
+  --name my-cluster \
+  --version "<kubernetes-version>" \
+  --control-plane-plan "<control-plane-plan>" \
+  --worker-plan "<worker-plan>" \
+  --storage-plan "<root-storage-plan>" \
+  --root-disk-size 100 \
+  --storage-category "<storage-category>" \
+  --workers 3 \
+  --billing-cycle hourly \
+  --region yul-1 \
+  --project default-9 \
+  --ssh-key "<ssh-key>"
 ```
 
-`--no-paginate` cannot be combined with the other pagination flags. A
-continuation token applies only to the same ACL and retains its page size.
+`zcp kubernetes get` now displays reported node resources, root volumes,
+network details, and autoscaling status when the API provides them. Use
+`--enable-csi` on create to request Cloud Storage Integration for a supported
+cluster.
 
-**Security updates.** The selected Go toolchain is now Go 1.26.9 and
-`golang.org/x/net` is now v0.60.0. These updates resolve the reachable
-standard-library and networking vulnerabilities reported by `govulncheck`.
+### Manage VM backup schedules
+
+`zcp vm-backup schedule` can create, list, get, update, pause, resume, run-now,
+and delete VM backup schedules. It supports hourly, daily, weekly, and monthly
+intervals, IANA timezones, retention counts, and an optional immediate backup.
+
+```bash
+zcp vm-backup schedule create my-vm \
+  --name nightly \
+  --interval dailyAt \
+  --at 01:00 \
+  --timezone America/Toronto \
+  --retention 7 \
+  --immediate
+
+zcp vm-backup schedule list
+zcp vm-backup schedule pause "<schedule-id>"
+zcp vm-backup schedule run-now "<schedule-id>"
+```
+
+`zcp vm-backup restore <vm-slug> <backup-slug>` overwrites the VM's current
+disks. It verifies that the VM is stopped and the backup is ready, belongs to
+that VM, and is in the selected region and project before submitting the restore
+request. It prompts for confirmation by default; use `--yes` to skip the prompt
+when scripting an intentional restore:
+
+```bash
+zcp vm-backup restore "<vm-slug>" "<backup-slug>" --yes
+```
+
+`zcp vm-backup create` also returns the created schedule slug in table, JSON,
+and YAML output.
+
+### Safer lifecycle and DNS behavior
+
+- Instance and Kubernetes deletion commands check the current lifecycle state before
+  requesting immediate cancellation. API error envelopes are reported even when
+  returned with HTTP 200.
+- `zcp dns list` retrieves every reported page and fails rather than returning a
+  partial list if a later page fails or its pagination metadata is inconsistent.
+- `zcp dns show` uses the matching list entry when the detail response omits a
+  domain status. It shows `-` only when the API reports no status.
+
+## Breaking changes and migration
+
+`zcp instance create` no longer accepts `--cpu`, `--memory`, or `--disk` to
+select a custom compute plan. Choose a named compute plan with `zcp plan vm`.
+Every new instance must also pass both `--blockstorage-plan` and
+`--root-disk-size`.
+
+`zcp kubernetes create` now requires `--control-plane-plan`, `--worker-plan`,
+`--storage-plan`, and `--root-disk-size`. Replace a former single cluster-plan
+selection with plans for both node roles and the shared root-storage tier.
+
+The root-storage plan must be a named available tier. A custom root-storage
+plan is not supported by these commands.
 
 ## Go library consumers
 
-`acl.Service.ListRules` now returns rules from every page. Callers receive an
-error and no partial rule list when a later page cannot be retrieved or its
-pagination metadata is inconsistent. Terraform provider maintainers must adopt
-this `zcp-cli` module release to receive this behavior.
+The Go module adds scheduler-backed VM backup APIs, VM backup restore support,
+DNS `FindBySlug`, richer Kubernetes response types, and root-storage fields on
+instance and Kubernetes create requests. No exported request fields were
+removed. DNS list callers now receive an error rather than a partial result when
+pagination fails. Consumers that construct instance or Kubernetes create
+requests should populate the separate root-storage fields before moving to this
+release.
 
----
+## Known limitations
+
+- Automatic Kubernetes scale-out failed in staging. `zcp kubernetes scale --enable-autoscaling` submitted the requested autoscaling configuration, but no worker was added. Staging scaling tests also recreated existing node root-volume subscriptions. Billing correctness after scaling remains unverified; this release does not resolve that platform issue. Manual worker scaling was tested separately.
+- The current platform can persist an `everyOtherDay` VM backup policy before
+  returning an error. List schedules after an error and remove any unintended
+  policy before retrying.
+- Kubernetes create/delete and VM backup restore operations run asynchronously.
+  A successful command confirms acceptance of the request, not completion of
+  the operation. Check the resource's current status and, after a restore, its
+  activity logs.
 
 ## Installation and upgrade
 
-The install script installs the latest release and upgrades an existing
+The install scripts install the latest release and upgrade an existing
 installation in place.
 
 **Linux / macOS**
@@ -62,19 +151,20 @@ curl -fsSL https://github.com/zsoftly/zcp-cli/releases/latest/download/install.s
 irm https://github.com/zsoftly/zcp-cli/releases/latest/download/install.ps1 | iex
 ```
 
-**Manual download:** grab your platform's binary from the
-[Releases](https://github.com/zsoftly/zcp-cli/releases) page, `chmod +x`, and
-place it on your `PATH`.
+**Manual download:** download the binary or archive for your platform from the
+[Releases](https://github.com/zsoftly/zcp-cli/releases) page. Extract an archive
+first. Rename the platform binary to `zcp` (or `zcp.exe` on Windows). On Linux
+or macOS, run `chmod +x zcp`, then place it on your `PATH`.
 
 **Verify:**
 
 ```bash
-zcp version   # zcp version v0.0.31
+zcp version   # zcp version v1.0.0
 ```
 
-First-time setup after installing:
+First-time setup:
 
 ```bash
-zcp profile add default --region yul-1 --project default-9   # prompts for bearer token
+zcp profile add default --region yul-1 --project default-9
 zcp auth validate
 ```

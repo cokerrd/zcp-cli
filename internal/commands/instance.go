@@ -26,11 +26,6 @@ const (
 	NetworkTypeVpc      = "Vpc"
 )
 
-const (
-	customPlanCPUMin      = 2
-	customPlanMemoryMaxGB = 256
-)
-
 // instanceGetRetryWait controls the backoff between transient-routing-error retries.
 // Overridden in tests to avoid real sleeps.
 var instanceGetRetryWait = func(attempt int) time.Duration {
@@ -373,12 +368,10 @@ func newInstanceCreateCmd() *cobra.Command {
 		storageCategory  string
 		computeCategory  string
 		blockstoragePlan string
+		rootDiskSize     int
 		networkPlan      string
 		userData         string
 		userDataFile     string
-		cpu              int
-		memory           int
-		disk             int
 		wait             bool
 		isPublic         bool
 		networks         []string
@@ -395,12 +388,15 @@ func newInstanceCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Create a new virtual machine",
-		Example: `  zcp instance create --name my-vm --project default-9 --region yul-1 --template ubuntu-2604-lts-1 --plan ca2sl --billing-cycle hourly --network-plan pnet-yul --storage-category premium-ssd
-  zcp instance create --name my-vm --project default-9 --region yul-1 --template ubuntu-2604-lts-1 --plan ca2sl --billing-cycle hourly --network-plan pnet-yul --storage-category premium-ssd --wait
-  zcp instance create --name my-vm --project default-9 --region yul-1 --template ubuntu-2604-lts-1 --plan ca2sl --billing-cycle hourly --network-plan pnet-yul --storage-category premium-ssd --ssh-key mykey   # import the key first with 'zcp ssh-key import'`,
+		Example: `  zcp instance create --name my-vm --project default-9 --region yul-1 --template ubuntu-2604-lts-1 --plan ca2cxs --blockstorage-plan b2g1 --root-disk-size 100 --billing-cycle hourly --network-plan pnet-yul --storage-category pro-nvme
+	  zcp instance create --name my-vm --project default-9 --region yul-1 --template ubuntu-2604-lts-1 --plan ca2cxs --blockstorage-plan b2g1 --root-disk-size 100 --billing-cycle hourly --network-plan pnet-yul --storage-category pro-nvme --wait
+	  zcp instance create --name my-vm --project default-9 --region yul-1 --template ubuntu-2604-lts-1 --plan ca2cxs --blockstorage-plan b2g1 --root-disk-size 100 --billing-cycle hourly --network-plan pnet-yul --storage-category pro-nvme --ssh-key mykey   # import the key first with 'zcp ssh-key import'`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if name == "" {
 				return fmt.Errorf("--name is required")
+			}
+			if plan == "" {
+				return fmt.Errorf("--plan is required")
 			}
 			cloudProvider = resolveCloudProvider(cmd, cloudProvider)
 			if cloudProvider == "" {
@@ -422,6 +418,22 @@ func newInstanceCreateCmd() *cobra.Command {
 			}
 			if storageCategory == "" {
 				return fmt.Errorf("--storage-category is required")
+			}
+			rootDiskSizeSet := cmd.Flags().Changed("root-disk-size")
+			if blockstoragePlan == "" && !rootDiskSizeSet {
+				return fmt.Errorf("--blockstorage-plan and --root-disk-size are required")
+			}
+			if blockstoragePlan == "" {
+				return fmt.Errorf("--blockstorage-plan is required when --root-disk-size is set")
+			}
+			if blockstoragePlan == "custom_plan" {
+				return fmt.Errorf("--blockstorage-plan must name a storage tier; custom_plan is not supported")
+			}
+			if !rootDiskSizeSet {
+				return fmt.Errorf("--root-disk-size is required when --blockstorage-plan is set")
+			}
+			if rootDiskSize <= 0 {
+				return fmt.Errorf("--root-disk-size must be > 0")
 			}
 			if userData != "" && userDataFile != "" {
 				return fmt.Errorf("--user-data and --user-data-file are mutually exclusive")
@@ -494,45 +506,34 @@ func newInstanceCreateCmd() *cobra.Command {
 				userDataPtr = &userData
 			}
 
-			resolvedPlan, customPlan, err := resolveInstanceCreatePlan(
-				plan,
-				cpu, memory, disk,
-				cmd.Flags().Changed("cpu"),
-				cmd.Flags().Changed("memory"),
-				cmd.Flags().Changed("disk"),
-			)
-			if err != nil {
-				return err
-			}
-
 			req := instance.CreateRequest{
-				Name:             name,
-				CloudProvider:    cloudProvider,
-				Project:          project,
-				Region:           region,
-				BootSource:       "image",
-				Server:           "cloud-compute",
-				Template:         template,
-				IsPublic:         isPublic,
-				NetworkType:      networkType,
-				Networks:         networks,
-				BillingCycle:     billingCycle,
-				SSHKey:           sshKeyPtr,
-				AuthMethod:       authMethod,
-				Password:         passwordPtr,
-				Plan:             resolvedPlan,
-				CustomPlan:       customPlan,
-				OSFamily:         "Linux",
-				TemplateType:     "Operating System",
-				Hostname:         h,
-				Addons:           []string{},
-				StorageCategory:  storageCategory,
-				ComputeCategory:  computeCategory,
-				BlockstoragePlan: blockstoragePlan,
-				NetworkPlan:      networkPlan,
-				DefaultNetwork:   defaultNetwork,
-				VrPlan:           vrPlan,
-				UserData:         userDataPtr,
+				Name:                   name,
+				CloudProvider:          cloudProvider,
+				Project:                project,
+				Region:                 region,
+				BootSource:             "image",
+				Server:                 "cloud-compute",
+				Template:               template,
+				IsPublic:               isPublic,
+				NetworkType:            networkType,
+				Networks:               networks,
+				BillingCycle:           billingCycle,
+				SSHKey:                 sshKeyPtr,
+				AuthMethod:             authMethod,
+				Password:               passwordPtr,
+				Plan:                   plan,
+				OSFamily:               "Linux",
+				TemplateType:           "Operating System",
+				Hostname:               h,
+				Addons:                 []string{},
+				StorageCategory:        storageCategory,
+				ComputeCategory:        computeCategory,
+				BlockstoragePlan:       blockstoragePlan,
+				BlockstorageCustomPlan: &instance.BlockstorageCustomPlan{Storage: rootDiskSize},
+				NetworkPlan:            networkPlan,
+				DefaultNetwork:         defaultNetwork,
+				VrPlan:                 vrPlan,
+				UserData:               userDataPtr,
 			}
 			return runInstanceCreate(cmd, req, wait)
 		},
@@ -542,60 +543,24 @@ func newInstanceCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&project, "project", "", "Project slug (required)")
 	cmd.Flags().StringVar(&region, "region", "", "Region slug (required)")
 	cmd.Flags().StringVar(&template, "template", "", "Template slug (required)")
-	cmd.Flags().StringVar(&plan, "plan", "", "Plan slug (required unless --cpu, --memory, and --disk are provided for a custom plan; e.g. ca2sxs - see: zcp plan vm)")
+	cmd.Flags().StringVar(&plan, "plan", "", "Compute plan slug (required; see: zcp plan vm)")
 	cmd.Flags().StringVar(&billingCycle, "billing-cycle", "", "Billing cycle slug: hourly, monthly, etc. (required)")
 	cmd.Flags().StringVar(&networkType, "network-type", "Isolated", "Network type: Isolated, L2 or Vpc (required)")
 	cmd.Flags().StringVar(&sshKey, "ssh-key", "", "Name of an existing SSH key to attach for login (optional; see 'zcp ssh-key list')")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "Hostname (defaults to --name)")
 	cmd.Flags().StringVar(&storageCategory, "storage-category", "", "Storage category (required; e.g. premium-ssd - see: zcp plan storage)")
 	cmd.Flags().StringVar(&computeCategory, "compute-category", "", "Compute category slug (optional)")
-	cmd.Flags().StringVar(&blockstoragePlan, "blockstorage-plan", "", "Block storage plan slug (optional, e.g. b2g1 — see: zcp plan storage)")
+	cmd.Flags().StringVar(&blockstoragePlan, "blockstorage-plan", "", "Root storage tier slug (required; see: zcp plan storage)")
+	cmd.Flags().IntVar(&rootDiskSize, "root-disk-size", 0, "Root disk capacity in GB for the selected storage tier (required)")
 	cmd.Flags().StringVar(&networkPlan, "network-plan", "", "Network plan slug (optional; required when creating an Isolated or L2 network type — see: zcp plan network)")
 	cmd.Flags().StringVar(&vrPlan, "vr-plan", "", "Virtual router plan slug (optional; required when creating a VPC — see: zcp plan router)")
 	cmd.Flags().StringVar(&defaultNetwork, "default-network", "", "Default network slug (optional; required when attaching multiple networks)")
 	cmd.Flags().StringSliceVar(&networks, "networks", []string{}, "List of network slugs to attach to the instance (optional; see: zcp network list)")
 	cmd.Flags().StringVar(&userData, "user-data", "", "Startup script content (cloud-init / bash)")
 	cmd.Flags().StringVar(&userDataFile, "user-data-file", "", "Path to a file containing the startup script")
-	cmd.Flags().IntVar(&cpu, "cpu", 0, "Number of vCPUs for a custom plan (e.g. 2)")
-	cmd.Flags().IntVar(&memory, "memory", 0, "RAM in GB for a custom plan (e.g. 4)")
-	cmd.Flags().IntVar(&disk, "disk", 0, "Root disk size in GB for a custom plan (e.g. 50)")
 	cmd.Flags().BoolVar(&wait, "wait", false, "Wait for the instance to reach Running state")
 	cmd.Flags().BoolVar(&isPublic, "is-public", true, "Assign a public IP address")
 	return cmd
-}
-
-func resolveInstanceCreatePlan(plan string, cpu, memory, disk int, cpuSet, memorySet, diskSet bool) (string, *instance.CustomPlan, error) {
-	customSet := cpuSet || memorySet || diskSet
-	customComplete := cpuSet && memorySet && diskSet
-
-	if plan == "" && !customComplete {
-		return "", nil, fmt.Errorf("--plan is required unless --cpu, --memory, and --disk are all provided for a custom plan")
-	}
-	if plan != "" && customSet {
-		return "", nil, fmt.Errorf("--plan cannot be used with --cpu, --memory, or --disk; omit --plan for a custom plan")
-	}
-	if !customSet {
-		return plan, nil, nil
-	}
-
-	if cpu < customPlanCPUMin {
-		return "", nil, fmt.Errorf("invalid value for --cpu: must be at least %d vCPU", customPlanCPUMin)
-	}
-	if memory <= 0 {
-		return "", nil, fmt.Errorf("invalid value for --memory: must be > 0 GB")
-	}
-	if memory > customPlanMemoryMaxGB {
-		return "", nil, fmt.Errorf("invalid value for --memory: must be less than or equal to %d GB", customPlanMemoryMaxGB)
-	}
-	if disk <= 0 {
-		return "", nil, fmt.Errorf("invalid value for --disk: must be > 0 GB")
-	}
-
-	return "", &instance.CustomPlan{
-		CPU:     strconv.Itoa(cpu),
-		Memory:  strconv.Itoa(memory),
-		Storage: strconv.Itoa(disk),
-	}, nil
 }
 
 func runInstanceCreate(cmd *cobra.Command, req instance.CreateRequest, wait bool) error {
@@ -687,6 +652,20 @@ func runInstanceStart(cmd *cobra.Command, slug string, wait bool) error {
 	headers := []string{"STATUS", "MESSAGE"}
 	rows := [][]string{{resp.Status, resp.Message}}
 	return printer.PrintTable(headers, rows)
+}
+
+// validateInstanceDeleteState uses the state returned by the live meta endpoint.
+// The portal disables deletion while a VM is starting; sending cancellation in
+// that window is rejected by the API.
+func validateInstanceDeleteState(slug, state string) error {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return fmt.Errorf("cannot delete instance %q because its current state is unknown; retry when the current state is available", slug)
+	}
+	if strings.EqualFold(state, "Starting") {
+		return fmt.Errorf("cannot delete instance %q while it is Starting; wait until it finishes starting, then retry", slug)
+	}
+	return nil
 }
 
 // ---------- stop ----------
@@ -1468,9 +1447,9 @@ uses — so the VM's auto-assigned public IP is released along with the VM (unle
 successful response means the request was accepted, not that the VM is already
 gone. Poll with 'zcp instance get <slug>' to confirm removal.
 
-The VM must be in a destroyable state; a VM that is mid-transition (e.g.
-Starting/Stopping) is rejected until it settles. Manually-acquired and source-NAT
-IPs are never touched by this command — release those with 'zcp ip release'.`,
+Deletion is refused while the VM is Starting or its current state cannot be
+verified. Manually-acquired and source-NAT IPs are never touched by this command.
+Release those with 'zcp ip release'.`,
 		Args: exactArgs(1),
 		Example: `  zcp instance delete my-vm
   zcp instance delete my-vm --yes
@@ -1530,6 +1509,13 @@ func runInstanceDelete(cmd *cobra.Command, slug string, deletePublicIP bool, bil
 			fmt.Fprintf(os.Stderr, "Instance %q not found — already deleted.\n", slug)
 			return nil
 		}
+		return err
+	}
+	meta, err := svc.Meta(ctx, vm.Slug)
+	if err != nil {
+		return fmt.Errorf("instance delete: could not determine the current state for %q: %w", vm.Slug, err)
+	}
+	if err := validateInstanceDeleteState(vm.Slug, meta.State); err != nil {
 		return err
 	}
 
