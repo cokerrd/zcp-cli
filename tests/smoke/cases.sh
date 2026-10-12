@@ -68,7 +68,8 @@ do_read() {
     instance)         run_case "instance list"            -- zcp instance list ;;
     volume)           run_case "volume list"              -- zcp volume list ;;
     vm-snapshot)      run_case "vm-snapshot list"         -- zcp vm-snapshot list ;;
-    snapshot)         run_case "snapshot list"            -- zcp snapshot list ;;
+    snapshot)         run_case "snapshot list"            -- zcp snapshot list
+                      run_case "snapshot schedule list"   -- zcp snapshot schedule list ;;
     backup)           run_case "backup list"              -- zcp backup list ;;
     vm-backup)        run_case "vm-backup list"           -- zcp vm-backup list ;;
     loadbalancer)     run_case "loadbalancer list"        -- zcp loadbalancer list ;;

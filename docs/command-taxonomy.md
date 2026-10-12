@@ -94,7 +94,16 @@ zcp
 │   ├── list                           List snapshots
 │   ├── create                         Create a snapshot of a volume
 │   ├── revert                         Revert a volume to a snapshot (destructive)
-│   └── delete                         Permanently delete a snapshot (--yes to skip prompt)
+│   ├── delete                         Permanently delete a snapshot (--yes to skip prompt)
+│   └── schedule                       Block storage snapshot schedules
+│       ├── list                       List schedules
+│       ├── get <id>                   Show a schedule
+│       ├── create <volume-slug>       Create a schedule
+│       ├── update <id>                Update a schedule
+│       ├── delete <id>                Delete a schedule
+│       ├── pause <id>                 Pause a schedule
+│       ├── resume <id>                Resume a schedule
+│       └── run-now <id>               Trigger a schedule
 │
 ├── vm-snapshot                        VM (instance-level) snapshot operations
 │   ├── list                           List VM snapshots
