@@ -23,6 +23,7 @@ func NewSnapshotCmd() *cobra.Command {
 	cmd.AddCommand(newSnapshotCreateCmd())
 	cmd.AddCommand(newSnapshotRevertCmd())
 	cmd.AddCommand(newSnapshotDeleteCmd())
+	cmd.AddCommand(newSnapshotScheduleCmd())
 	return cmd
 }
 

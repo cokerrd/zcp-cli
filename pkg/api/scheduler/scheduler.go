@@ -14,8 +14,13 @@ import (
 
 const maxListPages = 1000
 
+const (
+	ActionableTypeVMBackup             = "Virtual Machine Backup"
+	ActionableTypeBlockStorageSnapshot = "Block Storage Snapshot"
+)
+
 // Policy is the safe, user-facing portion of a scheduler action response.
-// It retains only the actionable VM reference and omits provider and account
+// It retains only the actionable resource reference and omits provider and account
 // objects, which contain unrelated and sometimes sensitive response data.
 type Policy struct {
 	ID               string    `json:"id"`
@@ -46,7 +51,7 @@ type ScopeRef struct {
 	Slug string `json:"slug"`
 }
 
-// VMRef is the safe VM reference embedded in a scheduler action.
+// VMRef is the safe actionable resource reference embedded in a scheduler action.
 type VMRef struct {
 	Slug string `json:"slug"`
 	Name string `json:"name"`
@@ -75,7 +80,7 @@ func (p *Policy) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// CreateRequest creates a virtual-machine backup policy.
+// CreateRequest creates a scheduler policy.
 type CreateRequest struct {
 	Service            string  `json:"service"`
 	Slug               string  `json:"slug"`
@@ -91,7 +96,7 @@ type CreateRequest struct {
 	Config             Config  `json:"config"`
 }
 
-// Config holds the documented VM-backup creation setting.
+// Config holds the documented scheduler creation setting.
 type Config struct {
 	TakeOneImmediately int `json:"take_one_immediately"`
 }
@@ -133,6 +138,18 @@ func NewService(client *httpclient.Client) *Service { return &Service{client: cl
 
 // List returns every VM backup scheduler action in the selected region and project.
 func (s *Service) List(ctx context.Context, region, project string) ([]Policy, error) {
+	return s.listByActionableType(ctx, region, project, ActionableTypeVMBackup)
+}
+
+// ListBlockStorageSnapshots returns every block-storage snapshot scheduler
+// action in the selected region and project.
+func (s *Service) ListBlockStorageSnapshots(ctx context.Context, region, project string) ([]Policy, error) {
+	return s.listByActionableType(ctx, region, project, ActionableTypeBlockStorageSnapshot)
+}
+
+// listByActionableType returns scheduler actions with the requested API
+// actionable type in the selected region and project.
+func (s *Service) listByActionableType(ctx context.Context, region, project, actionableType string) ([]Policy, error) {
 	var policies []Policy
 	var reportedTotal *int
 	for page := 1; page <= maxListPages; page++ {
@@ -143,7 +160,7 @@ func (s *Service) List(ctx context.Context, region, project string) ([]Policy, e
 		if project != "" {
 			q.Set("filter[project]", project)
 		}
-		q.Set("actionable_type", "Virtual Machine Backup")
+		q.Set("actionable_type", actionableType)
 		q.Set("page", strconv.Itoa(page))
 		var resp listEnvelope
 		if err := s.client.Get(ctx, "/scheduler-actions", q, &resp); err != nil {

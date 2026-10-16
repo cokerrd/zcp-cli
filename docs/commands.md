@@ -482,6 +482,18 @@ zcp vm-backup schedule pause <id>
 zcp vm-backup schedule resume <id>
 zcp vm-backup schedule run-now <id>
 zcp vm-backup schedule delete <id> --yes
+
+# Scheduler-backed block-storage snapshot policies. These are separate from
+# VM backup schedules and use the selected volume's region and project.
+zcp snapshot schedule create <volume-slug> --name nightly --interval dailyAt --at 01:00 \
+  --timezone America/Toronto --retention 7 --immediate
+zcp snapshot schedule list
+zcp snapshot schedule get <id>
+zcp snapshot schedule update <id> --interval weeklyOn --day 0 --at 02:00 --timezone UTC --retention 4
+zcp snapshot schedule pause <id>
+zcp snapshot schedule resume <id>
+zcp snapshot schedule run-now <id>
+zcp snapshot schedule delete <id> --yes
 ```
 
 `vm-backup delete` submits a service-cancellation request, the same workflow `instance delete` uses, since the VM backup API route does not support direct deletion.
@@ -492,7 +504,7 @@ zcp vm-backup schedule delete <id> --yes
 
 Use `zcp vm-backup schedule get <id>` to read the policy's last-run status and any reported error. A policy marked active does not by itself confirm that its last backup completed.
 
-The current platform rejects `everyOtherDay` with an error after persisting a policy. The CLI exposes the API interval for compatibility, but after such an error, list schedules before retrying and remove any unintended policy.
+For `vm-backup schedule`, the current platform rejects `everyOtherDay` with an error after persisting a policy. The CLI exposes the API interval for compatibility, but after such an error, list schedules before retrying and remove any unintended policy. Block-storage snapshot schedules accept only `hourly`, `dailyAt`, `weeklyOn`, and `monthlyOn`.
 
 ---
 

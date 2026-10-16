@@ -41,6 +41,41 @@ func TestListFetchesAllPages(t *testing.T) {
 	}
 }
 
+func TestListBlockStorageSnapshotsUsesSnapshotActionableType(t *testing.T) {
+	pages := make([]string, 0, 2)
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("actionable_type"); got != ActionableTypeBlockStorageSnapshot {
+			t.Errorf("actionable_type = %q, want %q", got, ActionableTypeBlockStorageSnapshot)
+		}
+		if got := r.URL.Query().Get("filter[region]"); got != "yul-1" {
+			t.Errorf("region = %q", got)
+		}
+		if got := r.URL.Query().Get("filter[project]"); got != "project-1" {
+			t.Errorf("project = %q", got)
+		}
+		pages = append(pages, r.URL.Query().Get("page"))
+		switch r.URL.Query().Get("page") {
+		case "1":
+			fmt.Fprint(w, `{"current_page":1,"total":2,"data":[{"id":"snapshot-policy-1","action":"Block Storage Snapshot"}]}`)
+		case "2":
+			fmt.Fprint(w, `{"current_page":2,"total":2,"data":[{"id":"snapshot-policy-2","action":"Block Storage Snapshot"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer s.Close()
+	got, err := testService(s).ListBlockStorageSnapshots(context.Background(), "yul-1", "project-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Action != ActionableTypeBlockStorageSnapshot || got[1].ID != "snapshot-policy-2" {
+		t.Fatalf("policies=%+v", got)
+	}
+	if strings.Join(pages, ",") != "1,2" {
+		t.Fatalf("pages=%v", pages)
+	}
+}
+
 func TestListReturnsNoPartialResultsWhenLaterPageFails(t *testing.T) {
 	var requests int
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
